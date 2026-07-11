@@ -1,0 +1,166 @@
+/* ── Tailwind directives ─────────────────────────────────────────────────── */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Google Fonts ────────────────────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+
+/* ── Base layer overrides ────────────────────────────────────────────────── */
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-neutral-100 font-sans text-neutral-900 antialiased;
+    min-height: 100vh;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    @apply font-display font-semibold text-neutral-900;
+    letter-spacing: -0.01em;
+  }
+
+  h1 {
+    @apply text-4xl md:text-5xl;
+  }
+
+  h2 {
+    @apply text-3xl md:text-4xl;
+  }
+
+  h3 {
+    @apply text-2xl md:text-3xl;
+  }
+
+  a {
+    @apply text-primary transition-colors duration-200 hover:text-primary-dark;
+  }
+
+  /* Consistent focus ring across the app */
+  *:focus-visible {
+    @apply outline-none ring-2 ring-primary ring-offset-2 ring-offset-neutral-100;
+  }
+
+  /* Custom scrollbar (WebKit) */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-neutral-100;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-neutral-300;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-primary-light;
+  }
+}
+
+/* ── Reusable component classes ──────────────────────────────────────────── */
+@layer components {
+  /* Card container — used across listings, forms, dashboards */
+  .card {
+    @apply rounded-2xl bg-surface p-6 shadow-card transition-shadow duration-200 hover:shadow-lift;
+  }
+
+  /* Section wrappers for pages */
+  .page-container {
+    @apply mx-auto w-full max-w-7xl px-4 py-8 md:px-8;
+  }
+
+  /* Skeleton block — used by <Skeleton /> component */
+  .skeleton {
+    background: linear-gradient(
+      90deg,
+      theme('colors.neutral.300') 0%,
+      theme('colors.neutral.100') 50%,
+      theme('colors.neutral.300') 100%
+    );
+    background-size: 800px 100%;
+    @apply animate-shimmer rounded-md;
+  }
+
+  /* Consistent input styling used by <Input /> component */
+  .input-base {
+    @apply w-full rounded-xl border border-neutral-300 bg-white px-4 py-2.5
+           text-neutral-900 placeholder-neutral-500 transition-colors duration-150
+           focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20
+           disabled:cursor-not-allowed disabled:bg-neutral-100 disabled:text-neutral-500;
+  }
+
+  /* Consistent primary button */
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-primary
+           px-5 py-2.5 font-semibold text-white shadow-soft transition-all duration-200
+           hover:bg-primary-dark hover:shadow-lift
+           active:translate-y-px active:shadow-soft
+           disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-primary;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-secondary
+           px-5 py-2.5 font-semibold text-white shadow-soft transition-all duration-200
+           hover:bg-secondary-dark hover:shadow-lift
+           active:translate-y-px active:shadow-soft
+           disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl border
+           border-neutral-300 bg-white px-5 py-2.5 font-medium text-neutral-900
+           transition-all duration-200 hover:border-primary hover:text-primary
+           active:translate-y-px
+           disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  .btn-danger {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-danger
+           px-5 py-2.5 font-semibold text-white shadow-soft transition-all duration-200
+           hover:opacity-90 hover:shadow-lift
+           active:translate-y-px
+           disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  /* Badge / chip */
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium;
+  }
+
+  .badge-success {
+    @apply badge bg-success/15 text-success;
+  }
+  .badge-warning {
+    @apply badge bg-warning/25 text-neutral-900;
+  }
+  .badge-danger {
+    @apply badge bg-danger/15 text-danger;
+  }
+  .badge-primary {
+    @apply badge bg-primary-light/25 text-primary-dark;
+  }
+}
+
+/* ── Utility helpers ─────────────────────────────────────────────────────── */
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
