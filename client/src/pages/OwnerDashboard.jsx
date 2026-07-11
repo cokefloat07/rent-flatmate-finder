@@ -155,24 +155,46 @@ export default function OwnerDashboard() {
   };
 
   // ── Revoke accepted interest ──
-  const handleRevokeInterest = async () => {
-    if (!confirmRevoke) return;
-    const interestId = confirmRevoke.id;
-    setPendingActionId(interestId);
+const handleRevokeInterest = async () => {
+  if (!confirmRevoke) return;
+  const interestId = confirmRevoke.id;
+  setPendingActionId(interestId);
 
+  try {
+    const result = await revokeInterest(interestId, revokeReason.trim() || null);
+    console.log('✅ Revoke success:', result);
+    
+    toast.success('Access revoked. Listing is now available again.');
+    setConfirmRevoke(null);
+    setRevokeReason('');
+    
+    // Reload data (wrapped in try/catch so a reload failure doesn't show error)
     try {
-      await revokeInterest(interestId, revokeReason.trim() || null);
-      toast.success('Access revoked. Listing is now available again.');
+      await loadAll();
+    } catch (reloadErr) {
+      console.warn('Reload after revoke failed:', reloadErr);
+    }
+  } catch (err) {
+    console.error('Revoke error:', err);
+    console.error('Response:', err.response);
+    console.error('Status:', err.httpStatus);
+    console.error('User message:', err.userMessage);
+    
+    // Only show error if it's a real error (not a stale UI issue)
+    if (err.httpStatus === 409) {
+      toast.error('This interest has already been revoked. Refreshing...');
+      await loadAll();
       setConfirmRevoke(null);
       setRevokeReason('');
-      await loadAll();
-    } catch (err) {
+    } else if (err.httpStatus === 403) {
+      toast.error('You do not have permission to revoke this.');
+    } else {
       toast.error(err.userMessage || 'Failed to revoke access.');
-    } finally {
-      setPendingActionId(null);
     }
-  };
-
+  } finally {
+    setPendingActionId(null);
+  }
+};
   const pendingInterests = interests.filter((i) => i.status === 'pending');
   const acceptedInterests = interests.filter((i) => i.status === 'accepted');
   const processedInterests = interests.filter(

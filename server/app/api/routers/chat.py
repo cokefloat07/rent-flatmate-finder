@@ -23,8 +23,12 @@ async def get_messages(
     if not interest:
         raise HTTPException(status_code=404, detail="Interest not found")
 
-    if interest.status != InterestStatus.accepted:
-        raise HTTPException(status_code=403, detail="Chat not available")
+    # Allow both accepted (full access) and revoked (read-only history)
+    if interest.status not in (InterestStatus.accepted, InterestStatus.revoked):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Chat not available (status: {interest.status.value})",
+        )
 
     listing = await Listing.get(interest.listing_id)
     is_tenant = interest.tenant_id == str(current_user.id)

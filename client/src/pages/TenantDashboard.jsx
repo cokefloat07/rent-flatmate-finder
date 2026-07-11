@@ -1,7 +1,16 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { MessageCircle, CheckCircle, FolderOpen, Sparkles } from 'lucide-react';
+import {
+  MessageCircle,
+  CheckCircle,
+  FolderOpen,
+  Sparkles,
+  Clock,
+  XCircle,
+  AlertCircle,
+  Info,
+} from 'lucide-react';
 
 import ListingCard from '../components/listings/ListingCard';
 import ListingFilters from '../components/listings/ListingFilters';
@@ -11,6 +20,7 @@ import useAuthStore from '../store/authStore';
 import { fetchListings } from '../services/listing.service';
 import { fetchMyInterests } from '../services/interest.service';
 import { fetchMyProfile } from '../services/profile.service';
+import { formatDate } from '../utils/formatters';
 
 export default function TenantDashboard() {
   const user = useAuthStore((s) => s.user);
@@ -82,15 +92,23 @@ export default function TenantDashboard() {
     loadInterests();
   }, [loadProfile, loadInterests]);
 
-  // ── Filter handler ────────────────────────────────────────────────────────
+  // Auto-refresh interests every 30 seconds to catch owner actions
+  useEffect(() => {
+    const interval = setInterval(() => {
+      loadInterests();
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [loadInterests]);
+
   const handleFilterChange = (newFilters) => {
     setFilters((prev) => ({ ...prev, ...newFilters }));
   };
 
-  // ── Derived ───────────────────────────────────────────────────────────────
+  // ── Derived — filter by status ────────────────────────────────────────────
   const acceptedInterests = interests.filter((i) => i.status === 'accepted');
   const pendingInterests = interests.filter((i) => i.status === 'pending');
   const declinedInterests = interests.filter((i) => i.status === 'declined');
+  const revokedInterests = interests.filter((i) => i.status === 'revoked');
 
   return (
     <motion.div
@@ -135,7 +153,7 @@ export default function TenantDashboard() {
         )}
       </section>
 
-      {/* My Chats */}
+      {/* My Chats — Active accepted interests */}
       {acceptedInterests.length > 0 && (
         <section className="bg-surface rounded-2xl shadow-md p-6">
           <h2 className="text-lg font-semibold text-neutral-900 flex items-center gap-2 mb-4">
@@ -157,13 +175,73 @@ export default function TenantDashboard() {
                     {interest.listing_location || 'Listing'}
                   </p>
                   <p className="text-xs text-neutral-500 truncate">
-                    {new Date(interest.responded_at || interest.created_at).toLocaleDateString()}
+                    Since {formatDate(interest.responded_at || interest.created_at)}
                   </p>
                 </div>
                 <span className="text-xs font-medium text-primary opacity-0 group-hover:opacity-100 transition-opacity">
                   Open →
                 </span>
               </Link>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Revoked Interests — Show reason + past chat notice */}
+      {revokedInterests.length > 0 && (
+        <section className="bg-surface rounded-2xl shadow-md p-6 border-2 border-warning/30">
+          <h2 className="text-lg font-semibold text-neutral-900 flex items-center gap-2 mb-4">
+            <AlertCircle size={18} className="text-warning" />
+            Access Revoked ({revokedInterests.length})
+          </h2>
+          <div className="space-y-3">
+            {revokedInterests.map((interest) => (
+              <div
+                key={interest.id}
+                className="rounded-xl border border-warning/40 bg-warning/5 p-4"
+              >
+                <div className="flex items-start justify-between gap-3 mb-2">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-neutral-900">
+                      {interest.listing_location || 'Listing'}
+                    </p>
+                    <p className="text-xs text-neutral-500 mt-0.5">
+                      Access revoked on {formatDate(interest.revoked_at)}
+                    </p>
+                  </div>
+                  <span className="shrink-0 text-xs font-medium text-neutral-900 bg-warning/20 px-2.5 py-1 rounded-full">
+                    Revoked
+                  </span>
+                </div>
+
+                {interest.revoke_reason && (
+                  <div className="mt-2 rounded-lg bg-white/70 border border-warning/20 p-3">
+                    <div className="flex items-start gap-2">
+                      <Info size={14} className="text-warning shrink-0 mt-0.5" />
+                      <div>
+                        <p className="text-xs font-medium text-neutral-900 mb-1">
+                          Owner's message:
+                        </p>
+                        <p className="text-sm text-neutral-700 italic">
+                          "{interest.revoke_reason}"
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <div className="mt-3 flex items-center justify-between gap-2">
+                  <p className="text-xs text-neutral-500">
+                    You can view past chat history or re-apply if the listing is still available.
+                  </p>
+                  <Link
+                    to={`/chat/${interest.id}`}
+                    className="shrink-0 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                  >
+                    <MessageCircle size={12} /> View chat history
+                  </Link>
+                </div>
+              </div>
             ))}
           </div>
         </section>
@@ -179,7 +257,8 @@ export default function TenantDashboard() {
                 key={interest.id}
                 className="flex items-center justify-between rounded-lg border border-warning/30 bg-warning/5 px-4 py-3"
               >
-                <div>
+                <div className="flex items-center gap-2">
+                  <Clock size={14} className="text-warning" />
                   <p className="text-sm font-medium text-neutral-900">
                     {interest.listing_location || 'Listing'}
                   </p>
@@ -194,7 +273,8 @@ export default function TenantDashboard() {
                 key={interest.id}
                 className="flex items-center justify-between rounded-lg border border-danger/20 bg-danger/5 px-4 py-3"
               >
-                <div>
+                <div className="flex items-center gap-2">
+                  <XCircle size={14} className="text-danger" />
                   <p className="text-sm font-medium text-neutral-900">
                     {interest.listing_location || 'Listing'}
                   </p>
@@ -230,7 +310,6 @@ export default function TenantDashboard() {
         ) : (
           <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
             {listings.map((listing, idx) => {
-              // Extract score data from listing (added by backend for tenants)
               const scoreData = listing.compatibility_score != null
                 ? {
                     score: listing.compatibility_score,

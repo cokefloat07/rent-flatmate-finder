@@ -1,7 +1,16 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { ArrowLeft, User, Home, Wifi, WifiOff, AlertCircle, Loader2 } from 'lucide-react';
+import {
+  ArrowLeft,
+  User,
+  Home,
+  Wifi,
+  WifiOff,
+  AlertCircle,
+  Loader2,
+  Ban,
+} from 'lucide-react';
 import toast from 'react-hot-toast';
 
 import ChatWindow from '../components/chat/ChatWindow';
@@ -11,49 +20,51 @@ import useAuthStore from '../store/authStore';
 import { fetchChatHistory, fetchInterest } from '../services/chat.service';
 import { fetchIncomingInterests, fetchMyInterests } from '../services/interest.service';
 import { ROUTES, ROLES } from '../utils/constants';
+import { formatDate } from '../utils/formatters';
 
 export default function Chat() {
   const { interestId } = useParams();
   const navigate = useNavigate();
 
-  // ⚠️ Select primitives individually so the component doesn't re-render
-  //    on unrelated auth store changes, and so deps stay stable.
   const userId = useAuthStore((s) => s.user?.id);
   const userRole = useAuthStore((s) => s.user?.role);
 
   const { connected, connecting, connectionError, subscribe, joinRoom, leaveRoom, sendMessage } =
     useSocket();
 
-  // ── State ──────────────────────────────────────────────────────────────────
   const [messages, setMessages] = useState([]);
   const [interest, setInterest] = useState(null);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState(null);
   const [joined, setJoined] = useState(false);
+  const [isReadOnly, setIsReadOnly] = useState(false);
 
-  // Sidebar chats
   const [chatList, setChatList] = useState([]);
 
-  // Derived primitive (stable across renders when unchanged)
   const interestStatus = interest?.status ?? null;
 
-  // ── Load interest metadata + history ──────────────────────────────────────
   const loadInterestAndHistory = useCallback(async () => {
     setHistoryLoading(true);
     setHistoryError(null);
 
     try {
-      // 1. Fetch interest (also serves as access gate — 403 if not accepted)
       const interestData = await fetchInterest(interestId);
       setInterest(interestData);
 
-      if (interestData.status !== 'accepted') {
-        setHistoryError('This chat is not available — the interest is not accepted.');
+      // Allow both accepted (full access) and revoked (read-only)
+      if (interestData.status !== 'accepted' && interestData.status !== 'revoked') {
+        setHistoryError(
+          `This chat is not available (status: ${interestData.status}).`
+        );
         setHistoryLoading(false);
         return;
       }
 
-      // 2. Fetch message history
+      // If revoked, set read-only immediately
+      if (interestData.status === 'revoked') {
+        setIsReadOnly(true);
+      }
+
       const history = await fetchChatHistory(interestId, { limit: 100 });
       setMessages(Array.isArray(history) ? history : []);
     } catch (err) {
@@ -65,60 +76,58 @@ export default function Chat() {
     }
   }, [interestId]);
 
-  // ── Load sidebar list of user's other accepted interests ──────────────────
   const loadChatList = useCallback(async () => {
     if (!userRole) return;
 
     try {
       const fetcher = userRole === ROLES.OWNER ? fetchIncomingInterests : fetchMyInterests;
       const data = await fetcher();
-      const accepted = (Array.isArray(data) ? data : []).filter((i) => i.status === 'accepted');
-      setChatList(accepted);
+      // Include both accepted AND revoked chats in sidebar
+      const chats = (Array.isArray(data) ? data : []).filter(
+        (i) => i.status === 'accepted' || i.status === 'revoked'
+      );
+      setChatList(chats);
     } catch {
-      // Non-fatal — sidebar just stays empty
       setChatList([]);
     }
   }, [userRole]);
 
-  // ── Fetch effect — depends on primitives, not callback references ────────
   useEffect(() => {
     loadInterestAndHistory();
     loadChatList();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [interestId, userRole]);
 
-  // ── Socket lifecycle: join room + subscribe to messages ──────────────────
-  //
-  // ⚠️ Deps are PRIMITIVES ONLY (connected, interestId, interestStatus).
-  //    Do NOT add joinRoom/leaveRoom/subscribe/interest here — they change
-  //    reference on every render and would cause an infinite join/leave loop.
   useEffect(() => {
     if (!connected) return;
-    if (interestStatus !== 'accepted') return;
+    if (interestStatus !== 'accepted' && interestStatus !== 'revoked') return;
 
-    // Join the room
     joinRoom(interestId);
 
-    // Subscribe to server confirmations
-    const unsubJoined = subscribe('joined', () => {
+    const unsubJoined = subscribe('joined', (payload) => {
       setJoined(true);
+      // Server tells us if this is a read-only session
+      if (payload?.read_only) {
+        setIsReadOnly(true);
+      }
     });
 
-    // Subscribe to new messages
     const unsubMsg = subscribe('new_message', (msg) => {
-      // Ignore messages from other rooms (defensive)
       if (msg.interest_id !== interestId) return;
 
       setMessages((prev) => {
-        // Deduplicate (in case server echoes our own message back)
         if (prev.some((m) => m.id === msg.id)) return prev;
         return [...prev, msg];
       });
     });
 
-    // Subscribe to error events
     const unsubErr = subscribe('error', (payload) => {
-      toast.error(payload?.message || 'Chat error');
+      const msg = payload?.message || 'Chat error';
+      // Suppress "revoke" errors — that's expected read-only behavior
+      if (msg.toLowerCase().includes('revoked') || msg.toLowerCase().includes('view history')) {
+        return;
+      }
+      toast.error(msg);
     });
 
     return () => {
@@ -131,8 +140,11 @@ export default function Chat() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected, interestId, interestStatus]);
 
-  // ── Send handler ──────────────────────────────────────────────────────────
   const handleSend = async (content) => {
+    if (isReadOnly) {
+      toast.error('This chat is read-only. Access has been revoked.');
+      return;
+    }
     if (!connected) {
       toast.error('Not connected — please wait.');
       return;
@@ -141,11 +153,13 @@ export default function Chat() {
     if (!ok) {
       toast.error('Failed to send — connection lost.');
     }
-    // Server will echo it back via new_message; no local optimistic add needed
   };
 
-  // ── Derived UI state ──────────────────────────────────────────────────────
-  const isInputDisabled = !connected || !joined || interestStatus !== 'accepted';
+  const isInputDisabled =
+    isReadOnly ||
+    !connected ||
+    !joined ||
+    interestStatus !== 'accepted';
 
   const counterpartLabel =
     userRole === ROLES.OWNER
@@ -153,6 +167,13 @@ export default function Chat() {
       : interest?.listing_location || 'Owner';
 
   const connectionStatus = (() => {
+    if (isReadOnly) {
+      return {
+        icon: <Ban size={12} />,
+        label: 'Read-only',
+        className: 'bg-warning/20 text-neutral-900 border-warning/40',
+      };
+    }
     if (connectionError) {
       return {
         icon: <AlertCircle size={12} />,
@@ -188,10 +209,6 @@ export default function Chat() {
     };
   })();
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // RENDER
-  // ══════════════════════════════════════════════════════════════════════════
-
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }}
@@ -199,7 +216,6 @@ export default function Chat() {
       transition={{ duration: 0.3 }}
       className="page-container"
     >
-      {/* ── Back button ─────────────────────────────────────────────── */}
       <button
         onClick={() => navigate(-1)}
         className="mb-4 inline-flex items-center gap-1.5 text-sm font-medium text-neutral-700 hover:text-primary transition-colors"
@@ -208,16 +224,12 @@ export default function Chat() {
       </button>
 
       <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
-        {/* ══════════════════════════════════════════════════════════════ */}
-        {/* SIDEBAR — Chat list (hidden on mobile)                       */}
-        {/* ══════════════════════════════════════════════════════════════ */}
+        {/* SIDEBAR */}
         <aside className="hidden lg:block">
           <ChatList chats={chatList} activeId={interestId} currentUserRole={userRole} />
         </aside>
 
-        {/* ══════════════════════════════════════════════════════════════ */}
-        {/* MAIN — Chat panel                                            */}
-        {/* ══════════════════════════════════════════════════════════════ */}
+        {/* MAIN */}
         <div className="flex flex-col h-[calc(100vh-14rem)] min-h-[500px]">
           {/* Header */}
           <div className="mb-3 flex items-center justify-between gap-3">
@@ -236,7 +248,6 @@ export default function Chat() {
               </div>
             </div>
 
-            {/* Connection status pill */}
             <div
               className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium ${connectionStatus.className}`}
             >
@@ -244,6 +255,38 @@ export default function Chat() {
               {connectionStatus.label}
             </div>
           </div>
+
+          {/* Revoked banner */}
+          {interestStatus === 'revoked' && !historyError && (
+            <div className="mb-3 rounded-xl border border-warning/40 bg-warning/10 p-4">
+              <div className="flex items-start gap-3">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-warning/20">
+                  <Ban size={16} className="text-warning" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold text-neutral-900">
+                    {userRole === ROLES.OWNER
+                      ? 'You revoked this tenant\'s access'
+                      : 'Owner has revoked your access'}
+                  </p>
+                  {interest?.revoke_reason && (
+                    <div className="mt-2 rounded-lg bg-white/70 border border-warning/20 p-3">
+                      <p className="text-xs font-medium text-neutral-900 mb-1">
+                        Reason:
+                      </p>
+                      <p className="text-sm text-neutral-700 italic">
+                        "{interest.revoke_reason}"
+                      </p>
+                    </div>
+                  )}
+                  <p className="mt-2 text-xs text-neutral-600">
+                    {interest?.revoked_at && `Revoked on ${formatDate(interest.revoked_at)}. `}
+                    You can view past messages but cannot send new ones.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Error banner */}
           {historyError && (
@@ -268,6 +311,11 @@ export default function Chat() {
                 loading={historyLoading}
                 disabled={isInputDisabled}
                 onSend={handleSend}
+                placeholder={
+                  isReadOnly
+                    ? 'This chat is read-only'
+                    : undefined
+                }
               />
             </div>
           )}

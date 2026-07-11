@@ -41,26 +41,34 @@ function attachInterceptors(axiosInstance) {
     (requestError) => Promise.reject(requestError)
   );
 
-  axiosInstance.interceptors.response.use(
-    (response) => {
-      const body = response.data;
+  // Find this section in api.js and REPLACE it:
 
-      if (body && typeof body === 'object' && body.success !== undefined) {
-        if (!body.success) {
-          throw new ApiError(body.message || 'Unknown server error', response.status);
-        }
-        return body.data ?? response;
-      }
+axiosInstance.interceptors.response.use(
+  (response) => {
+    const body = response.data;
 
-      return response.data;
-    },
-    (error) => {
-      if (!axios.isCancel(error)) {
-        normaliseError(error);
+    // Handle wrapped { success, data } responses
+    if (body && typeof body === 'object' && body.success !== undefined) {
+      if (!body.success) {
+        // Server returned success=false — treat as error
+        const error = new ApiError(body.message || 'Unknown server error', response.status);
+        return Promise.reject(error);
       }
-      return Promise.reject(error);
+      
+      // Return data if present, or the whole body for endpoints without .data
+      return body.data !== undefined ? body.data : body;
     }
-  );
+
+    // Fallback for non-wrapped responses
+    return response.data;
+  },
+  (error) => {
+    if (!axios.isCancel(error)) {
+      normaliseError(error);
+    }
+    return Promise.reject(error);
+  }
+);
 }
 
 function normaliseError(error) {
