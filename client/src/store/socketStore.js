@@ -61,15 +61,17 @@ const useSocketStore = create((set, get) => ({
 
     set({ connecting: true, connectionError: null }, false);
 
-    const socket = io(SOCKET_URL, {
-      auth: { token }, // Sent to backend's connect handler
-      transports: ['websocket', 'polling'],
-      reconnection: true,
-      reconnectionAttempts: 5,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-      timeout: 10_000,
-    });
+const socket = io(SOCKET_URL, {
+  auth: { token },
+  transports: ['polling', 'websocket'],  
+  reconnection: true,
+  reconnectionAttempts: 5,
+  reconnectionDelay: 1000,
+  reconnectionDelayMax: 5000,
+  timeout: 20_000,
+  withCredentials: true,     
+  upgrade: true,             
+});
 
     // ── Connection lifecycle listeners ────────────────────────────────────
     socket.on('connect', () => {
