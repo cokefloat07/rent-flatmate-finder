@@ -140,14 +140,12 @@ async def create_interest(
         except DuplicateKeyError:
             raise HTTPException(status_code=409, detail="Interest already exists")
 
-    # Compute score
     try:
         score = await _get_or_compute_score(current_user, listing)
     except Exception as e:
         logger.error(f"Score computation failed: {e}", exc_info=True)
         score = None
 
-    # Notify owner
     if score and score.score >= HIGH_SCORE_THRESHOLD:
         try:
             owner = await User.get(listing.owner_id)
@@ -166,27 +164,11 @@ async def create_interest(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CHECK INTEREST FOR A SPECIFIC LISTING (used by ListingDetails page)
+# ⚠️ IMPORTANT: STATIC ROUTES MUST COME BEFORE PARAMETRIC ROUTES
+# Otherwise FastAPI will match /for-listing/xxx as /{interest_id}
 # ─────────────────────────────────────────────────────────────────────────────
-@router.get("/for-listing/{listing_id}", summary="Get my interest for a specific listing")
-async def get_my_interest_for_listing(
-    listing_id: str,
-    current_user: Annotated[User, Depends(require_role(UserRole.tenant))],
-):
-    interest = await Interest.find_one({
-        "tenant_id": str(current_user.id),
-        "listing_id": listing_id,
-    })
 
-    if not interest:
-        return {"success": True, "data": None}
-
-    return {"success": True, "data": _interest_to_out(interest)}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# LIST OWN INTERESTS (tenant)
-# ─────────────────────────────────────────────────────────────────────────────
+# ── MY INTERESTS (tenant) ────────────────────────────────────────────────────
 @router.get("/my", summary="List own interests")
 async def get_my_interests(
     current_user: Annotated[User, Depends(require_role(UserRole.tenant))],
@@ -199,7 +181,6 @@ async def get_my_interests(
             "listing_id": interest.listing_id,
         })
         out = _interest_to_out(interest, score)
-        # Add listing location for display
         listing = await Listing.get(interest.listing_id)
         if listing:
             out["listing_location"] = listing.location
@@ -207,9 +188,7 @@ async def get_my_interests(
     return {"success": True, "data": results}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# LIST INCOMING INTERESTS (owner)
-# ─────────────────────────────────────────────────────────────────────────────
+# ── INCOMING INTERESTS (owner) ───────────────────────────────────────────────
 @router.get("/incoming", summary="List incoming interests")
 async def get_incoming_interests(
     current_user: Annotated[User, Depends(require_role(UserRole.owner))],
@@ -231,7 +210,6 @@ async def get_incoming_interests(
         out = _interest_to_out(interest, score)
         out["listing_location"] = listing_map.get(interest.listing_id, "Unknown")
 
-        # Fetch tenant name for display
         tenant = await User.get(interest.tenant_id)
         out["tenant_name"] = tenant.name if tenant else "Unknown"
 
@@ -239,9 +217,28 @@ async def get_incoming_interests(
     return {"success": True, "data": results}
 
 
+# ── CHECK INTEREST FOR A SPECIFIC LISTING (⭐ MUST BE BEFORE /{interest_id}) ──
+@router.get("/for-listing/{listing_id}", summary="Get my interest for a specific listing")
+async def get_my_interest_for_listing(
+    listing_id: str,
+    current_user: Annotated[User, Depends(require_role(UserRole.tenant))],
+):
+    interest = await Interest.find_one({
+        "tenant_id": str(current_user.id),
+        "listing_id": listing_id,
+    })
+
+    if not interest:
+        return {"success": True, "data": None}
+
+    return {"success": True, "data": _interest_to_out(interest)}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
-# RESPOND TO INTEREST (accept/decline)
+# ACTIONS ON SPECIFIC INTEREST BY ID
 # ─────────────────────────────────────────────────────────────────────────────
+
+# ── RESPOND TO INTEREST (accept/decline) ─────────────────────────────────────
 @router.patch("/{interest_id}/respond", summary="Respond to interest")
 async def respond_to_interest(
     interest_id: str,
@@ -267,7 +264,6 @@ async def respond_to_interest(
     interest.responded_at = datetime.now(timezone.utc)
     await interest.save()
 
-    # Notify tenant
     try:
         tenant = await User.get(interest.tenant_id)
         if tenant:
@@ -280,7 +276,6 @@ async def respond_to_interest(
     except Exception as e:
         logger.warning(f"Tenant notification email failed: {e}")
 
-    # Mark filled + auto-decline competitors
     if accepted:
         listing.is_filled = True
         await listing.save()
@@ -311,22 +306,13 @@ async def respond_to_interest(
     return {"success": True, "data": _interest_to_out(interest)}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# REVOKE ACCEPTED INTEREST (owner changes their mind after chatting)
-# ─────────────────────────────────────────────────────────────────────────────
+# ── REVOKE ACCEPTED INTEREST ─────────────────────────────────────────────────
 @router.patch("/{interest_id}/revoke", summary="Revoke a previously accepted interest")
 async def revoke_interest(
     interest_id: str,
     body: InterestRevoke,
     current_user: Annotated[User, Depends(require_role(UserRole.owner))],
 ):
-    """
-    Owner revokes a previously accepted interest.
-    - Only works if interest.status == 'accepted'
-    - Sets status to 'revoked'
-    - Frees up the listing (is_filled = False)
-    - Sends notification email to tenant
-    """
     interest = await Interest.get(interest_id)
     if not interest:
         raise HTTPException(status_code=404, detail="Interest not found")
@@ -338,16 +324,14 @@ async def revoke_interest(
     if interest.status != InterestStatus.accepted:
         raise HTTPException(
             status_code=409,
-            detail=f"Cannot revoke — current status is '{interest.status.value}'",
+            detail=f"Cannot revoke — current status is '{interest.status.value}'. Only accepted interests can be revoked.",
         )
 
-    # Revoke the interest
     interest.status = InterestStatus.revoked
     interest.revoked_at = datetime.now(timezone.utc)
     interest.revoke_reason = body.reason
     await interest.save()
 
-    # Free up the listing
     listing.is_filled = False
     await listing.save()
 
@@ -356,11 +340,9 @@ async def revoke_interest(
         f"Listing {listing.id} is available again."
     )
 
-    # Notify tenant of revocation
     try:
         tenant = await User.get(interest.tenant_id)
         if tenant:
-            # Reuse the decline notification for now
             await notify_tenant_interest_response(
                 tenant_email=tenant.email,
                 tenant_name=tenant.name,
@@ -373,9 +355,7 @@ async def revoke_interest(
     return {"success": True, "data": _interest_to_out(interest)}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# GET SINGLE INTEREST BY ID
-# ─────────────────────────────────────────────────────────────────────────────
+# ── GET SINGLE INTEREST BY ID (⭐ MUST BE LAST — CATCH-ALL) ──────────────────
 @router.get("/{interest_id}", summary="Get interest by ID")
 async def get_interest(
     interest_id: str,
