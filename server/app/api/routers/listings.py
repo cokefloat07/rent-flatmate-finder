@@ -45,7 +45,22 @@ async def get_my_listings(
     listings = await Listing.find({"owner_id": str(current_user.id)}).to_list()
     return {"success": True, "data": [_listing_to_out(l) for l in listings]}
 
+@router.patch("/{listing_id}/filled", summary="Mark listing as filled (owner only)")
+async def mark_listing_filled(
+    listing_id: str,
+    current_user: Annotated[User, Depends(require_role(UserRole.owner))],
+):
+    """Toggle a listing's is_filled status to True."""
+    listing = await Listing.get(listing_id)
+    if not listing:
+        raise HTTPException(status_code=404, detail="Listing not found")
+    if listing.owner_id != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Not your listing")
 
+    listing.is_filled = True
+    await listing.save()
+
+    return {"success": True, "data": _listing_to_out(listing)}
 @router.get("/{listing_id}", summary="Get listing by ID")
 async def get_listing(listing_id: str):
     listing = await Listing.get(listing_id)
