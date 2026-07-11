@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Search, SlidersHorizontal, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ROOM_TYPES } from '../../utils/constants';
@@ -8,34 +8,42 @@ import { ROOM_TYPES } from '../../utils/constants';
  *
  * Props:
  *   onFilter — callback(filters) called when user applies filters
- *   initial  — default filter values
+ *   initial  — default filter values (from parent)
  */
 export default function ListingFilters({ onFilter, initial = {} }) {
   const [location, setLocation] = useState(initial.location || '');
-  const [budgetMax, setBudgetMax] = useState(initial.budgetMax || '');
-  const [roomType, setRoomType] = useState(initial.roomType || '');
+  const [budgetMin, setBudgetMin] = useState(initial.budget_min || '');
+  const [budgetMax, setBudgetMax] = useState(initial.budget_max || '');
+  const [roomType, setRoomType] = useState(initial.room_type || '');
   const [expanded, setExpanded] = useState(false);
 
-  const activeCount = [location, budgetMax, roomType].filter(Boolean).length;
+  const activeCount = [location, budgetMin, budgetMax, roomType].filter(Boolean).length;
 
   const handleApply = () => {
     onFilter({
       location: location.trim(),
-      budget_max: budgetMax ? Number(budgetMax) : undefined,
-      room_type: roomType || undefined,
+      budget_min: budgetMin ? Number(budgetMin) : '',
+      budget_max: budgetMax ? Number(budgetMax) : '',
+      room_type: roomType || '',
     });
   };
 
   const handleReset = () => {
     setLocation('');
+    setBudgetMin('');
     setBudgetMax('');
     setRoomType('');
-    onFilter({});
+    onFilter({
+      location: '',
+      budget_min: '',
+      budget_max: '',
+      room_type: '',
+    });
   };
 
   return (
     <div className="mb-6 rounded-2xl bg-surface p-4 shadow-soft md:p-5">
-      {/* ── Main row: search + toggle ─────────────────────────────────── */}
+      {/* Main row */}
       <div className="flex gap-3">
         <div className="relative flex-1">
           <Search
@@ -53,6 +61,7 @@ export default function ListingFilters({ onFilter, initial = {} }) {
         </div>
 
         <button
+          type="button"
           onClick={() => setExpanded((v) => !v)}
           className={`btn-ghost relative !px-3 ${expanded ? '!border-primary !text-primary' : ''}`}
           aria-label="Toggle filters"
@@ -65,12 +74,12 @@ export default function ListingFilters({ onFilter, initial = {} }) {
           )}
         </button>
 
-        <button onClick={handleApply} className="btn-primary !px-4 text-sm">
+        <button type="button" onClick={handleApply} className="btn-primary !px-4 text-sm">
           Search
         </button>
       </div>
 
-      {/* ── Expandable filters ────────────────────────────────────────── */}
+      {/* Expandable filters */}
       <AnimatePresence>
         {expanded && (
           <motion.div
@@ -80,7 +89,22 @@ export default function ListingFilters({ onFilter, initial = {} }) {
             transition={{ duration: 0.2 }}
             className="overflow-hidden"
           >
-            <div className="mt-4 grid gap-4 border-t border-neutral-300 pt-4 sm:grid-cols-2 md:grid-cols-3">
+            <div className="mt-4 grid gap-4 border-t border-neutral-300 pt-4 sm:grid-cols-2 md:grid-cols-4">
+              {/* Budget min */}
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-neutral-900">
+                  Min budget (₹/mo)
+                </label>
+                <input
+                  type="number"
+                  placeholder="e.g. 5000"
+                  value={budgetMin}
+                  onChange={(e) => setBudgetMin(e.target.value)}
+                  className="input-base"
+                  min="0"
+                />
+              </div>
+
               {/* Budget max */}
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-neutral-900">
@@ -119,6 +143,7 @@ export default function ListingFilters({ onFilter, initial = {} }) {
               <div className="flex items-end">
                 {activeCount > 0 && (
                   <button
+                    type="button"
                     onClick={handleReset}
                     className="inline-flex items-center gap-1.5 text-sm font-medium text-neutral-700 hover:text-danger"
                   >

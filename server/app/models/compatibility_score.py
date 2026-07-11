@@ -7,8 +7,11 @@ from pydantic import Field
 
 
 class ScoreMethod(str, Enum):
-    llm = "llm"
+    llm = "llm"                    # backward compatibility with old data
+    llm_groq = "llm-groq"
+    llm_ollama = "llm-ollama"
     rule_based = "rule-based"
+    error = "error"
 
 
 class CompatibilityScore(Document):

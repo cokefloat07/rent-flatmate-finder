@@ -1,73 +1,55 @@
 import api from './api';
 
 /**
- * GET /api/listings/?location=&budget_min=&budget_max=&skip=&limit=
- *
- * Public — no auth required for browsing.
- * Authenticated tenants will receive compatibility scores per listing.
+ * Fetch listings with optional filters.
+ * Maps frontend filter names → backend query params.
  */
-export function fetchListings(params = {}) {
-  const query = {};
+export async function fetchListings(filters = {}) {
+  const params = {};
 
-  if (params.location) query.location = params.location;
-  if (params.budget_min !== undefined && params.budget_min !== '') {
-    query.budget_min = params.budget_min;
+  if (filters.location && String(filters.location).trim()) {
+    params.location = String(filters.location).trim();
   }
-  if (params.budget_max !== undefined && params.budget_max !== '') {
-    query.budget_max = params.budget_max;
-  }
-  if (params.room_type) query.room_type = params.room_type;
-  if (params.skip !== undefined) query.skip = params.skip;
-  if (params.limit !== undefined) query.limit = params.limit;
 
-  return api.get('/listings/', { params: query });
+  const min = filters.budget_min ?? filters.minRent;
+  if (min !== '' && min != null && !isNaN(Number(min))) {
+    params.budget_min = Number(min);
+  }
+
+  const max = filters.budget_max ?? filters.maxRent;
+  if (max !== '' && max != null && !isNaN(Number(max))) {
+    params.budget_max = Number(max);
+  }
+
+  if (filters.room_type && String(filters.room_type).trim()) {
+    params.room_type = filters.room_type;
+  }
+
+  const data = await api.get('/listings/', { params });
+  return Array.isArray(data) ? data : [];
 }
 
-/**
- * GET /api/listings/{id}
- */
-export function fetchListingById(id) {
+export async function fetchListingById(id) {
   return api.get(`/listings/${id}`);
 }
 
-/**
- * GET /api/listings/my   (owner only)
- */
-export function fetchMyListings() {
-  return api.get('/listings/my');
+export async function fetchMyListings() {
+  const data = await api.get('/listings/my');
+  return Array.isArray(data) ? data : [];
 }
 
-/**
- * POST /api/listings/   (owner only)
- */
-export function createListing(data) {
-  return api.post('/listings/', data);
+export async function createListing(payload) {
+  return api.post('/listings/', payload);
 }
 
-/**
- * PATCH /api/listings/{id}   (owner only)
- *
- * Use this for editing listing fields such as location, rent, photos etc.
- * For toggling filled/available status, use setListingFilled() below.
- */
-export function updateListing(id, data) {
-  return api.patch(`/listings/${id}`, data);
+export async function updateListing(id, payload) {
+  return api.patch(`/listings/${id}`, payload);
 }
 
-/**
- * PATCH /api/listings/{id}/filled   (owner only)
- *
- * Dedicated endpoint for marking a listing as filled or available.
- * Filled listings are hidden from tenant browse results but remain
- * visible on the owner's own dashboard.
- */
-export function setListingFilled(id, isFilled) {
-  return api.patch(`/listings/${id}/filled`, { is_filled: isFilled });
+export async function toggleListingFilled(id) {
+  return api.patch(`/listings/${id}/filled`);
 }
 
-/**
- * DELETE /api/listings/{id}   (owner only)
- */
-export function deleteListing(id) {
+export async function deleteListing(id) {
   return api.delete(`/listings/${id}`);
 }

@@ -18,7 +18,12 @@ export default function TenantDashboard() {
   // ── Listings ──────────────────────────────────────────────────────────────
   const [listings, setListings] = useState([]);
   const [listingsLoading, setListingsLoading] = useState(true);
-  const [filters, setFilters] = useState({ location: '', minRent: '', maxRent: '' });
+  const [filters, setFilters] = useState({
+    location: '',
+    budget_min: '',
+    budget_max: '',
+    room_type: '',
+  });
 
   // ── Profile ───────────────────────────────────────────────────────────────
   const [profile, setProfile] = useState(null);
@@ -34,7 +39,8 @@ export default function TenantDashboard() {
     try {
       const data = await fetchListings(filters);
       setListings(Array.isArray(data) ? data : []);
-    } catch {
+    } catch (err) {
+      console.error('Failed to load listings:', err);
       setListings([]);
     } finally {
       setListingsLoading(false);
@@ -76,14 +82,15 @@ export default function TenantDashboard() {
     loadInterests();
   }, [loadProfile, loadInterests]);
 
+  // ── Filter handler ────────────────────────────────────────────────────────
+  const handleFilterChange = (newFilters) => {
+    setFilters((prev) => ({ ...prev, ...newFilters }));
+  };
+
   // ── Derived ───────────────────────────────────────────────────────────────
   const acceptedInterests = interests.filter((i) => i.status === 'accepted');
   const pendingInterests = interests.filter((i) => i.status === 'pending');
   const declinedInterests = interests.filter((i) => i.status === 'declined');
-
-  // ══════════════════════════════════════════════════════════════════════════
-  // RENDER
-  // ══════════════════════════════════════════════════════════════════════════
 
   return (
     <motion.div
@@ -92,7 +99,7 @@ export default function TenantDashboard() {
       transition={{ duration: 0.3 }}
       className="page-container space-y-8"
     >
-      {/* ── Header ─────────────────────────────────────────────────────── */}
+      {/* Header */}
       <div>
         <h1 className="text-3xl font-bold text-neutral-900 flex items-center gap-2">
           <Sparkles className="text-secondary" size={28} />
@@ -103,7 +110,7 @@ export default function TenantDashboard() {
         </p>
       </div>
 
-      {/* ── Profile Section ─────────────────────────────────────────────── */}
+      {/* Profile Section */}
       <section className="bg-surface rounded-2xl shadow-md p-6">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-neutral-900 flex items-center gap-2">
@@ -120,17 +127,15 @@ export default function TenantDashboard() {
           <Skeleton className="h-24 w-full rounded-xl" />
         ) : (
           <TenantProfileForm
-            profile={profile}
-            onSaved={(updated) => {
-              setProfile(updated);
-              // Reload listings so scores update
+            onSaved={() => {
+              loadProfile();
               loadListings();
             }}
           />
         )}
       </section>
 
-      {/* ── My Chats Section ────────────────────────────────────────────── */}
+      {/* My Chats */}
       {acceptedInterests.length > 0 && (
         <section className="bg-surface rounded-2xl shadow-md p-6">
           <h2 className="text-lg font-semibold text-neutral-900 flex items-center gap-2 mb-4">
@@ -152,7 +157,6 @@ export default function TenantDashboard() {
                     {interest.listing_location || 'Listing'}
                   </p>
                   <p className="text-xs text-neutral-500 truncate">
-                    {interest.listing_owner_name || 'Owner'} •{' '}
                     {new Date(interest.responded_at || interest.created_at).toLocaleDateString()}
                   </p>
                 </div>
@@ -165,7 +169,7 @@ export default function TenantDashboard() {
         </section>
       )}
 
-      {/* ── Pending / Declined Interests ────────────────────────────────── */}
+      {/* Pending / Declined */}
       {(pendingInterests.length > 0 || declinedInterests.length > 0) && (
         <section className="bg-surface rounded-2xl shadow-md p-6">
           <h2 className="text-lg font-semibold text-neutral-900 mb-4">My Interests</h2>
@@ -178,9 +182,6 @@ export default function TenantDashboard() {
                 <div>
                   <p className="text-sm font-medium text-neutral-900">
                     {interest.listing_location || 'Listing'}
-                  </p>
-                  <p className="text-xs text-neutral-500">
-                    {interest.listing_owner_name || 'Owner'}
                   </p>
                 </div>
                 <span className="text-xs font-medium text-warning bg-warning/15 px-2.5 py-1 rounded-full">
@@ -197,9 +198,6 @@ export default function TenantDashboard() {
                   <p className="text-sm font-medium text-neutral-900">
                     {interest.listing_location || 'Listing'}
                   </p>
-                  <p className="text-xs text-neutral-500">
-                    {interest.listing_owner_name || 'Owner'}
-                  </p>
                 </div>
                 <span className="text-xs font-medium text-danger bg-danger/10 px-2.5 py-1 rounded-full">
                   Declined
@@ -210,10 +208,10 @@ export default function TenantDashboard() {
         </section>
       )}
 
-      {/* ── Filters ─────────────────────────────────────────────────────── */}
-      <ListingFilters filters={filters} onChange={setFilters} />
+      {/* Filters */}
+      <ListingFilters onFilter={handleFilterChange} initial={filters} />
 
-      {/* ── Listings Grid ───────────────────────────────────────────────── */}
+      {/* Listings Grid */}
       <section>
         {listingsLoading ? (
           <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
@@ -231,16 +229,25 @@ export default function TenantDashboard() {
           </div>
         ) : (
           <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-            {listings.map((listing, idx) => (
-              <motion.div
-                key={listing.id}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: idx * 0.05, duration: 0.3 }}
-              >
-                <ListingCard listing={listing} />
-              </motion.div>
-            ))}
+            {listings.map((listing, idx) => {
+              // Extract score data from listing (added by backend for tenants)
+              const scoreData = listing.compatibility_score != null
+                ? {
+                    score: listing.compatibility_score,
+                    explanation: listing.score_explanation,
+                    method: listing.score_method,
+                  }
+                : null;
+
+              return (
+                <ListingCard
+                  key={listing.id}
+                  listing={listing}
+                  score={scoreData}
+                  index={idx}
+                />
+              );
+            })}
           </div>
         )}
       </section>
