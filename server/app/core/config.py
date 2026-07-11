@@ -16,9 +16,17 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 hours
 
     # LLM (Ollama)
+    # LLM Provider Toggle: "ollama" or "groq"
+    LLM_PROVIDER: str = "ollama"
+
+    # Ollama
     LLM_BASE_URL: str = "http://localhost:11434"
     LLM_MODEL: str = "llama3.1:8b"
 
+    # Groq
+    GROQ_API_KEY: str = ""
+    GROQ_MODEL: str = "llama-3.1-8b-instant"
+    GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
     # Email (SMTP)
     MAIL_USERNAME: str = ""
     MAIL_PASSWORD: str = ""
