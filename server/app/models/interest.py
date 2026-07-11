@@ -11,6 +11,7 @@ class InterestStatus(str, Enum):
     pending = "pending"
     accepted = "accepted"
     declined = "declined"
+    revoked = "revoked"     # NEW: owner revoked after accepting
 
 
 class Interest(Document):
@@ -19,6 +20,8 @@ class Interest(Document):
     status: InterestStatus = InterestStatus.pending
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     responded_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None       # NEW
+    revoke_reason: Optional[str] = None         # NEW
 
     class Settings:
         name = "interests"

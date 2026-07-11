@@ -17,6 +17,10 @@ import {
   Home,
   User,
   Info,
+  Clock,
+  XCircle,
+  MessageCircle,
+  RotateCcw,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -24,38 +28,11 @@ import Button from '../components/common/Button';
 import Skeleton from '../components/common/Skeleton';
 import ScoreBadge from '../components/listings/ScoreBadge';
 import { fetchListingById } from '../services/listing.service';
-import { expressInterest } from '../services/interest.service';
+import { expressInterest, fetchMyInterestForListing } from '../services/interest.service';
 import { fetchMyProfile } from '../services/profile.service';
 import { formatDate, formatCurrency, getScoreColor } from '../utils/formatters';
-import { ROUTES, ROLES } from '../utils/constants';
+import { ROUTES, ROLES, buildRoute } from '../utils/constants';
 import useAuthStore from '../store/authStore';
-
-// ── Mock data ────────────────────────────────────────────────────────────────
-const MOCK_LISTING = {
-  id: 'mockDetail1',
-  owner_id: 'owner-123',
-  location: 'Indiranagar, Bengaluru',
-  rent: 12000,
-  available_from: '2025-08-01',
-  room_type: 'single',
-  furnishing_status: 'furnished',
-  photos: [
-    'https://images.unsplash.com/photo-1522708323590-d24dbb6b0267?w=1200&q=80',
-    'https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?w=1200&q=80',
-    'https://images.unsplash.com/photo-1493809842364-78817add7ffb?w=1200&q=80',
-  ],
-  is_filled: false,
-  created_at: '2025-07-01T10:00:00Z',
-};
-
-const MOCK_SCORE = {
-  score: 87,
-  explanation:
-    'Great match! The location aligns with your preferred area of Indiranagar. The rent of ₹12,000/month falls comfortably within your budget range. The furnished single room type matches your typical preferences.',
-  method: 'llm',
-};
-
-const USE_MOCK = false;
 
 export default function ListingDetails() {
   const { id } = useParams();
@@ -69,31 +46,20 @@ export default function ListingDetails() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [hasProfile, setHasProfile] = useState(false);
-  const [interestSent, setInterestSent] = useState(false);
+  const [myInterest, setMyInterest] = useState(null); // null | { status, ... }
   const [expressingInterest, setExpressingInterest] = useState(false);
 
-  // Photo carousel
   const [currentPhoto, setCurrentPhoto] = useState(0);
 
-  // ── Load listing + optional profile check ──────────────────────────────────
+  // ── Load listing + interest status ─────────────────────────────────────────
   const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
-
-    if (USE_MOCK) {
-      await new Promise((r) => setTimeout(r, 500));
-      setListing(MOCK_LISTING);
-      setScore(MOCK_SCORE);
-      setHasProfile(true);
-      setLoading(false);
-      return;
-    }
 
     try {
       const listingData = await fetchListingById(id);
       setListing(listingData);
 
-      // Extract inline score if backend included it (tenants only)
       if (listingData.compatibility_score != null) {
         setScore({
           score: listingData.compatibility_score,
@@ -102,13 +68,21 @@ export default function ListingDetails() {
         });
       }
 
-      // Check profile existence for tenants
       if (user?.role === ROLES.TENANT) {
+        // Check profile
         try {
           await fetchMyProfile();
           setHasProfile(true);
         } catch {
           setHasProfile(false);
+        }
+
+        // Check existing interest
+        try {
+          const interest = await fetchMyInterestForListing(id);
+          setMyInterest(interest);
+        } catch {
+          setMyInterest(null);
         }
       }
     } catch (err) {
@@ -122,14 +96,12 @@ export default function ListingDetails() {
     loadData();
   }, [loadData]);
 
-  // ── Photo carousel handlers ────────────────────────────────────────────────
+  // ── Photo carousel ────────────────────────────────────────────────────────
   const photos = listing?.photos || [];
   const hasPhotos = photos.length > 0;
-
   const nextPhoto = () => setCurrentPhoto((i) => (i + 1) % photos.length);
   const prevPhoto = () => setCurrentPhoto((i) => (i - 1 + photos.length) % photos.length);
 
-  // Keyboard nav for carousel
   useEffect(() => {
     if (!hasPhotos) return;
     const handler = (e) => {
@@ -161,18 +133,15 @@ export default function ListingDetails() {
 
     setExpressingInterest(true);
 
-    if (USE_MOCK) {
-      await new Promise((r) => setTimeout(r, 400));
-      toast.success('Interest sent! (mock)');
-      setInterestSent(true);
-      setExpressingInterest(false);
-      return;
-    }
-
     try {
-      await expressInterest(id);
-      toast.success('Interest sent — the owner will be notified.');
-      setInterestSent(true);
+      const result = await expressInterest(id);
+      const isReApply = myInterest?.status === 'declined' || myInterest?.status === 'revoked';
+      toast.success(
+        isReApply
+          ? 'Interest re-sent — the owner will be notified.'
+          : 'Interest sent — the owner will be notified.'
+      );
+      setMyInterest(result);
     } catch (err) {
       toast.error(err.userMessage || 'Failed to send interest.');
     } finally {
@@ -180,7 +149,6 @@ export default function ListingDetails() {
     }
   };
 
-  // ── Labels ─────────────────────────────────────────────────────────────────
   const roomLabels = {
     single: 'Single Room',
     double: 'Double Room',
@@ -193,8 +161,6 @@ export default function ListingDetails() {
     unfurnished: 'Unfurnished',
   };
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // LOADING STATE
   // ══════════════════════════════════════════════════════════════════════════
   if (loading) {
     return (
@@ -209,23 +175,17 @@ export default function ListingDetails() {
               <Skeleton width="60%" height="1.5rem" />
               <Skeleton width="100%" />
               <Skeleton width="80%" />
-              <Skeleton width="90%" />
             </div>
           </div>
           <div className="card space-y-3">
             <Skeleton width="80%" height="1.5rem" />
             <Skeleton width="100%" height="3rem" />
-            <Skeleton width="100%" />
-            <Skeleton width="70%" />
           </div>
         </div>
       </div>
     );
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // ERROR STATE
-  // ══════════════════════════════════════════════════════════════════════════
   if (error || !listing) {
     return (
       <motion.div
@@ -249,12 +209,14 @@ export default function ListingDetails() {
     );
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // MAIN CONTENT
-  // ══════════════════════════════════════════════════════════════════════════
   const scoreColor = score ? getScoreColor(score.score) : null;
+  const interestStatus = myInterest?.status || null;
+
+  // Can express interest if: no interest yet, OR previously declined/revoked (re-apply)
   const canExpressInterest =
-    !interestSent && !listing.is_filled && (!user || user.role === ROLES.TENANT);
+    !listing.is_filled &&
+    user?.role === ROLES.TENANT &&
+    (!interestStatus || interestStatus === 'declined' || interestStatus === 'revoked');
 
   return (
     <motion.div
@@ -263,7 +225,6 @@ export default function ListingDetails() {
       transition={{ duration: 0.3 }}
       className="page-container"
     >
-      {/* ── Back button ─────────────────────────────────────────────────── */}
       <button
         onClick={() => navigate(-1)}
         className="mb-4 inline-flex items-center gap-1.5 text-sm font-medium text-neutral-700 hover:text-primary transition-colors"
@@ -272,11 +233,9 @@ export default function ListingDetails() {
       </button>
 
       <div className="grid gap-6 lg:grid-cols-3">
-        {/* ══════════════════════════════════════════════════════════════ */}
-        {/* LEFT COLUMN — Photo + Details                                */}
-        {/* ══════════════════════════════════════════════════════════════ */}
+        {/* LEFT COLUMN */}
         <div className="lg:col-span-2 space-y-6">
-          {/* ── Photo Carousel ────────────────────────────────────────── */}
+          {/* Photo Carousel */}
           <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-primary/15 to-secondary/10 shadow-card">
             <div className="relative h-80 md:h-96">
               {hasPhotos ? (
@@ -294,7 +253,6 @@ export default function ListingDetails() {
                     />
                   </AnimatePresence>
 
-                  {/* Navigation arrows */}
                   {photos.length > 1 && (
                     <>
                       <button
@@ -314,7 +272,6 @@ export default function ListingDetails() {
                     </>
                   )}
 
-                  {/* Photo count indicator */}
                   {photos.length > 1 && (
                     <div className="absolute bottom-3 right-3 rounded-full bg-neutral-900/70 px-3 py-1 text-xs font-medium text-white backdrop-blur-sm">
                       {currentPhoto + 1} / {photos.length}
@@ -327,7 +284,6 @@ export default function ListingDetails() {
                 </div>
               )}
 
-              {/* Filled overlay */}
               {listing.is_filled && (
                 <div className="absolute left-4 top-4 rounded-full bg-danger px-4 py-1.5 text-sm font-semibold text-white shadow-lift">
                   Filled
@@ -335,7 +291,6 @@ export default function ListingDetails() {
               )}
             </div>
 
-            {/* Thumbnail row */}
             {photos.length > 1 && (
               <div className="flex gap-2 overflow-x-auto p-3 no-scrollbar">
                 {photos.map((photo, i) => (
@@ -359,7 +314,7 @@ export default function ListingDetails() {
             )}
           </div>
 
-          {/* ── Details Card ──────────────────────────────────────────── */}
+          {/* Details Card */}
           <div className="card">
             <div className="mb-4 flex items-start justify-between gap-3">
               <div>
@@ -378,7 +333,6 @@ export default function ListingDetails() {
               </div>
             </div>
 
-            {/* Feature grid */}
             <div className="grid gap-4 sm:grid-cols-3 border-t border-neutral-300 pt-4">
               <FeatureItem
                 icon={<Bed size={18} />}
@@ -398,7 +352,7 @@ export default function ListingDetails() {
             </div>
           </div>
 
-          {/* ── AI Compatibility Section ──────────────────────────────── */}
+          {/* AI Compatibility Section */}
           {score && (
             <motion.div
               initial={{ opacity: 0, y: 10 }}
@@ -437,44 +391,20 @@ export default function ListingDetails() {
                   <span>
                     Computed via{' '}
                     <span className="font-medium">
-                      {score.method === 'llm' ? 'AI language model' : 'rule-based scoring'}
+                      {score.method?.startsWith('llm') ? 'AI language model' : 'rule-based scoring'}
                     </span>
                   </span>
                 </div>
               </div>
             </motion.div>
           )}
-
-          {/* ── Info panel when no score (guest / non-tenant) ─────────── */}
-          {!score && !user && (
-            <div className="card bg-primary/5 border border-primary/20">
-              <div className="flex items-start gap-3">
-                <Sparkles size={20} className="shrink-0 text-primary mt-0.5" />
-                <div>
-                  <h4 className="font-semibold text-neutral-900 mb-1">
-                    Want a personalised compatibility score?
-                  </h4>
-                  <p className="text-sm text-neutral-700 mb-3">
-                    Sign up as a tenant and create a profile to see how well this listing matches
-                    your preferences.
-                  </p>
-                  <Link to={ROUTES.REGISTER} className="btn-primary !text-sm">
-                    Get started
-                  </Link>
-                </div>
-              </div>
-            </div>
-          )}
         </div>
 
-        {/* ══════════════════════════════════════════════════════════════ */}
-        {/* RIGHT COLUMN — Action Panel (sticky on desktop)              */}
-        {/* ══════════════════════════════════════════════════════════════ */}
+        {/* RIGHT COLUMN */}
         <div className="lg:sticky lg:top-24 lg:h-fit">
           <div className="card">
             <h3 className="mb-4 text-lg">Interested?</h3>
 
-            {/* Owner placeholder */}
             <div className="mb-5 flex items-center gap-3 rounded-xl bg-neutral-100 p-3">
               <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary text-white font-semibold">
                 <User size={18} />
@@ -485,55 +415,18 @@ export default function ListingDetails() {
               </div>
             </div>
 
-            {/* Status banners */}
-            {listing.is_filled ? (
-              <div className="rounded-xl bg-danger/10 p-4 text-center">
-                <p className="text-sm font-medium text-danger">This listing has been filled.</p>
-              </div>
-            ) : interestSent ? (
-              <div className="rounded-xl bg-success/10 p-4 text-center">
-                <CheckCircle2 size={24} className="mx-auto mb-1 text-success" />
-                <p className="text-sm font-semibold text-success">Interest sent!</p>
-                <p className="mt-1 text-xs text-neutral-500">
-                  You'll be notified when the owner responds.
-                </p>
-              </div>
-            ) : user?.role === ROLES.OWNER ? (
-              <div className="rounded-xl bg-neutral-100 p-4 text-center">
-                <p className="text-sm text-neutral-700">
-                  You're logged in as an owner. Only tenants can express interest.
-                </p>
-              </div>
-            ) : user?.role === ROLES.ADMIN ? (
-              <div className="rounded-xl bg-neutral-100 p-4 text-center">
-                <p className="text-sm text-neutral-700">Admin view — interest actions disabled.</p>
-              </div>
-            ) : (
-              <>
-                <Button
-                  variant="primary"
-                  fullWidth
-                  loading={expressingInterest}
-                  onClick={handleExpressInterest}
-                  disabled={!canExpressInterest}
-                >
-                  <Send size={16} />
-                  Express Interest
-                </Button>
-
-                {/* Contextual hints below button */}
-                {!user && (
-                  <p className="mt-3 text-center text-xs text-neutral-500">
-                    You'll be asked to sign in first.
-                  </p>
-                )}
-                {user?.role === ROLES.TENANT && !hasProfile && (
-                  <p className="mt-3 text-center text-xs text-secondary-dark">
-                    Create a profile to send interest.
-                  </p>
-                )}
-              </>
-            )}
+            {/* Status-based UI */}
+            {renderInterestSection({
+              listing,
+              user,
+              interestStatus,
+              myInterest,
+              hasProfile,
+              canExpressInterest,
+              expressingInterest,
+              handleExpressInterest,
+              navigate,
+            })}
 
             {/* Quick stats */}
             <div className="mt-6 border-t border-neutral-300 pt-4 space-y-2 text-sm">
@@ -565,7 +458,168 @@ export default function ListingDetails() {
   );
 }
 
-// ── Small helper ─────────────────────────────────────────────────────────────
+// ── Interest status renderer ─────────────────────────────────────────────────
+function renderInterestSection({
+  listing,
+  user,
+  interestStatus,
+  myInterest,
+  hasProfile,
+  canExpressInterest,
+  expressingInterest,
+  handleExpressInterest,
+  navigate,
+}) {
+  // Listing filled
+  if (listing.is_filled && interestStatus !== 'accepted') {
+    return (
+      <div className="rounded-xl bg-danger/10 p-4 text-center">
+        <p className="text-sm font-medium text-danger">This listing has been filled.</p>
+      </div>
+    );
+  }
+
+  // Owner viewing
+  if (user?.role === ROLES.OWNER) {
+    return (
+      <div className="rounded-xl bg-neutral-100 p-4 text-center">
+        <p className="text-sm text-neutral-700">
+          You're logged in as an owner. Only tenants can express interest.
+        </p>
+      </div>
+    );
+  }
+
+  if (user?.role === ROLES.ADMIN) {
+    return (
+      <div className="rounded-xl bg-neutral-100 p-4 text-center">
+        <p className="text-sm text-neutral-700">Admin view — interest actions disabled.</p>
+      </div>
+    );
+  }
+
+  // Interest status-based UI
+  if (interestStatus === 'pending') {
+    return (
+      <div className="rounded-xl bg-warning/10 border border-warning/30 p-4 text-center">
+        <Clock size={24} className="mx-auto mb-1 text-warning" />
+        <p className="text-sm font-semibold text-neutral-900">Interest Pending</p>
+        <p className="mt-1 text-xs text-neutral-600">
+          Waiting for the owner to respond.
+        </p>
+      </div>
+    );
+  }
+
+  if (interestStatus === 'accepted') {
+    return (
+      <div className="space-y-3">
+        <div className="rounded-xl bg-success/10 border border-success/30 p-4 text-center">
+          <CheckCircle2 size={24} className="mx-auto mb-1 text-success" />
+          <p className="text-sm font-semibold text-success">Interest Accepted!</p>
+          <p className="mt-1 text-xs text-neutral-600">
+            You can now chat with the owner.
+          </p>
+        </div>
+        <Button
+          variant="primary"
+          fullWidth
+          onClick={() => navigate(buildRoute.chat(myInterest.id))}
+        >
+          <MessageCircle size={16} />
+          Open Chat
+        </Button>
+      </div>
+    );
+  }
+
+  if (interestStatus === 'declined') {
+    return (
+      <div className="space-y-3">
+        <div className="rounded-xl bg-danger/10 border border-danger/30 p-4 text-center">
+          <XCircle size={24} className="mx-auto mb-1 text-danger" />
+          <p className="text-sm font-semibold text-danger">Interest Declined</p>
+          <p className="mt-1 text-xs text-neutral-600">
+            The owner declined your previous interest.
+          </p>
+        </div>
+        {!listing.is_filled && (
+          <Button
+            variant="primary"
+            fullWidth
+            loading={expressingInterest}
+            onClick={handleExpressInterest}
+          >
+            <RotateCcw size={16} />
+            Try Again
+          </Button>
+        )}
+      </div>
+    );
+  }
+
+  if (interestStatus === 'revoked') {
+    return (
+      <div className="space-y-3">
+        <div className="rounded-xl bg-warning/10 border border-warning/30 p-4">
+          <div className="flex items-center gap-2 justify-center mb-1">
+            <AlertCircle size={20} className="text-warning" />
+            <p className="text-sm font-semibold text-neutral-900">Access Revoked</p>
+          </div>
+          <p className="text-xs text-neutral-600 text-center">
+            The owner has revoked your access.
+          </p>
+          {myInterest?.revoke_reason && (
+            <div className="mt-2 rounded-lg bg-white/60 p-2">
+              <p className="text-xs text-neutral-700 italic">
+                "{myInterest.revoke_reason}"
+              </p>
+            </div>
+          )}
+        </div>
+        {!listing.is_filled && (
+          <Button
+            variant="primary"
+            fullWidth
+            loading={expressingInterest}
+            onClick={handleExpressInterest}
+          >
+            <RotateCcw size={16} />
+            Re-apply
+          </Button>
+        )}
+      </div>
+    );
+  }
+
+  // No interest yet — show Express Interest button
+  return (
+    <>
+      <Button
+        variant="primary"
+        fullWidth
+        loading={expressingInterest}
+        onClick={handleExpressInterest}
+        disabled={!canExpressInterest}
+      >
+        <Send size={16} />
+        Express Interest
+      </Button>
+
+      {!user && (
+        <p className="mt-3 text-center text-xs text-neutral-500">
+          You'll be asked to sign in first.
+        </p>
+      )}
+      {user?.role === ROLES.TENANT && !hasProfile && (
+        <p className="mt-3 text-center text-xs text-secondary-dark">
+          Create a profile to send interest.
+        </p>
+      )}
+    </>
+  );
+}
+
 function FeatureItem({ icon, label, value }) {
   return (
     <div className="flex items-start gap-3">

@@ -10,7 +10,12 @@ from app.models.interest import Interest, InterestStatus
 from app.models.listing import Listing
 from app.models.tenant_profile import TenantProfile
 from app.models.user import User, UserRole
-from app.schemas.interest import InterestCreate, InterestOut, InterestResponse
+from app.schemas.interest import (
+    InterestCreate,
+    InterestOut,
+    InterestResponse,
+    InterestRevoke,
+)
 from app.services.email_service import (
     notify_owner_high_score_interest,
     notify_tenant_interest_response,
@@ -22,6 +27,14 @@ router = APIRouter()
 HIGH_SCORE_THRESHOLD = 80.0
 
 
+def _safe_score_method(method_str: str) -> ScoreMethod:
+    try:
+        return ScoreMethod(method_str)
+    except (ValueError, KeyError):
+        logger.warning(f"Unknown score method '{method_str}', defaulting to rule_based")
+        return ScoreMethod.rule_based
+
+
 def _interest_to_out(i: Interest, score: CompatibilityScore | None = None) -> dict:
     return InterestOut(
         id=str(i.id),
@@ -30,6 +43,8 @@ def _interest_to_out(i: Interest, score: CompatibilityScore | None = None) -> di
         status=i.status.value,
         created_at=i.created_at.isoformat(),
         responded_at=i.responded_at.isoformat() if i.responded_at else None,
+        revoked_at=i.revoked_at.isoformat() if i.revoked_at else None,
+        revoke_reason=i.revoke_reason,
         compatibility_score=score.score if score else None,
         score_explanation=score.explanation if score else None,
     ).model_dump()
@@ -38,11 +53,6 @@ def _interest_to_out(i: Interest, score: CompatibilityScore | None = None) -> di
 async def _get_or_compute_score(
     tenant: User, listing: Listing
 ) -> CompatibilityScore | None:
-    """
-    Look up the cached compatibility score for this tenant/listing pair.
-    If none exists, compute one now (LLM with rule-based fallback) and cache it.
-    Returns None only if the tenant has no profile.
-    """
     score = await CompatibilityScore.find_one({
         "tenant_id": str(tenant.id),
         "listing_id": str(listing.id),
@@ -52,9 +62,6 @@ async def _get_or_compute_score(
 
     profile = await TenantProfile.find_one({"tenant_id": str(tenant.id)})
     if not profile:
-        logger.warning(
-            f"Tenant {tenant.id} has no profile — skipping compatibility scoring"
-        )
         return None
 
     profile_dict = {
@@ -78,24 +85,22 @@ async def _get_or_compute_score(
         listing_id=str(listing.id),
         score=result["score"],
         explanation=result["explanation"],
-        method=ScoreMethod(result["method"]),
+        method=_safe_score_method(result["method"]),
     )
     try:
         await score.insert()
     except DuplicateKeyError:
-        # Race: another request cached it first — fetch that one
         score = await CompatibilityScore.find_one({
             "tenant_id": str(tenant.id),
             "listing_id": str(listing.id),
         })
 
-    logger.info(
-        f"On-demand score computed: tenant={tenant.id}, "
-        f"listing={listing.id}, score={score.score if score else 'N/A'}"
-    )
     return score
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CREATE INTEREST
+# ─────────────────────────────────────────────────────────────────────────────
 @router.post("/", status_code=status.HTTP_201_CREATED, summary="Express interest")
 async def create_interest(
     body: InterestCreate,
@@ -111,37 +116,77 @@ async def create_interest(
         "tenant_id": str(current_user.id),
         "listing_id": body.listing_id,
     })
+
     if existing:
-        raise HTTPException(status_code=409, detail="Interest already exists")
+        # Allow re-applying if previously revoked or declined
+        if existing.status in (InterestStatus.revoked, InterestStatus.declined):
+            existing.status = InterestStatus.pending
+            existing.responded_at = None
+            existing.revoked_at = None
+            existing.revoke_reason = None
+            existing.created_at = datetime.now(timezone.utc)
+            await existing.save()
+            interest = existing
+            logger.info(f"Tenant {current_user.id} re-applied to listing {body.listing_id}")
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Interest already exists with status: {existing.status.value}",
+            )
+    else:
+        interest = Interest(tenant_id=str(current_user.id), listing_id=body.listing_id)
+        try:
+            await interest.insert()
+        except DuplicateKeyError:
+            raise HTTPException(status_code=409, detail="Interest already exists")
 
-    # Ensure a compatibility score exists BEFORE deciding on the email
-    score = await _get_or_compute_score(current_user, listing)
-
-    interest = Interest(tenant_id=str(current_user.id), listing_id=body.listing_id)
+    # Compute score
     try:
-        await interest.insert()
-    except DuplicateKeyError:
-        raise HTTPException(status_code=409, detail="Interest already exists")
+        score = await _get_or_compute_score(current_user, listing)
+    except Exception as e:
+        logger.error(f"Score computation failed: {e}", exc_info=True)
+        score = None
 
-    # ── EMAIL 1: notify owner when a high-compatibility tenant is interested ──
+    # Notify owner
     if score and score.score >= HIGH_SCORE_THRESHOLD:
-        owner = await User.get(listing.owner_id)
-        if owner:
-            await notify_owner_high_score_interest(
-                owner_email=owner.email,
-                owner_name=owner.name,
-                tenant_name=current_user.name,
-                listing_location=listing.location,
-                score=score.score,
-            )
-            logger.info(
-                f"High-score interest email sent to owner {owner.email} "
-                f"(score={score.score})"
-            )
+        try:
+            owner = await User.get(listing.owner_id)
+            if owner:
+                await notify_owner_high_score_interest(
+                    owner_email=owner.email,
+                    owner_name=owner.name,
+                    tenant_name=current_user.name,
+                    listing_location=listing.location,
+                    score=score.score,
+                )
+        except Exception as e:
+            logger.warning(f"Owner notification email failed: {e}")
 
     return {"success": True, "data": _interest_to_out(interest, score)}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CHECK INTEREST FOR A SPECIFIC LISTING (used by ListingDetails page)
+# ─────────────────────────────────────────────────────────────────────────────
+@router.get("/for-listing/{listing_id}", summary="Get my interest for a specific listing")
+async def get_my_interest_for_listing(
+    listing_id: str,
+    current_user: Annotated[User, Depends(require_role(UserRole.tenant))],
+):
+    interest = await Interest.find_one({
+        "tenant_id": str(current_user.id),
+        "listing_id": listing_id,
+    })
+
+    if not interest:
+        return {"success": True, "data": None}
+
+    return {"success": True, "data": _interest_to_out(interest)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LIST OWN INTERESTS (tenant)
+# ─────────────────────────────────────────────────────────────────────────────
 @router.get("/my", summary="List own interests")
 async def get_my_interests(
     current_user: Annotated[User, Depends(require_role(UserRole.tenant))],
@@ -153,16 +198,25 @@ async def get_my_interests(
             "tenant_id": interest.tenant_id,
             "listing_id": interest.listing_id,
         })
-        results.append(_interest_to_out(interest, score))
+        out = _interest_to_out(interest, score)
+        # Add listing location for display
+        listing = await Listing.get(interest.listing_id)
+        if listing:
+            out["listing_location"] = listing.location
+        results.append(out)
     return {"success": True, "data": results}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# LIST INCOMING INTERESTS (owner)
+# ─────────────────────────────────────────────────────────────────────────────
 @router.get("/incoming", summary="List incoming interests")
 async def get_incoming_interests(
     current_user: Annotated[User, Depends(require_role(UserRole.owner))],
 ):
     owner_listings = await Listing.find({"owner_id": str(current_user.id)}).to_list()
     listing_ids = [str(l.id) for l in owner_listings]
+    listing_map = {str(l.id): l.location for l in owner_listings}
 
     if not listing_ids:
         return {"success": True, "data": []}
@@ -174,10 +228,20 @@ async def get_incoming_interests(
             "tenant_id": interest.tenant_id,
             "listing_id": interest.listing_id,
         })
-        results.append(_interest_to_out(interest, score))
+        out = _interest_to_out(interest, score)
+        out["listing_location"] = listing_map.get(interest.listing_id, "Unknown")
+
+        # Fetch tenant name for display
+        tenant = await User.get(interest.tenant_id)
+        out["tenant_name"] = tenant.name if tenant else "Unknown"
+
+        results.append(out)
     return {"success": True, "data": results}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# RESPOND TO INTEREST (accept/decline)
+# ─────────────────────────────────────────────────────────────────────────────
 @router.patch("/{interest_id}/respond", summary="Respond to interest")
 async def respond_to_interest(
     interest_id: str,
@@ -193,32 +257,33 @@ async def respond_to_interest(
         raise HTTPException(status_code=403, detail="Access denied")
 
     if interest.status != InterestStatus.pending:
-        raise HTTPException(status_code=409, detail="Already responded")
+        raise HTTPException(
+            status_code=409,
+            detail=f"Interest already {interest.status.value}",
+        )
 
     accepted = body.action == "accept"
     interest.status = InterestStatus.accepted if accepted else InterestStatus.declined
     interest.responded_at = datetime.now(timezone.utc)
     await interest.save()
 
-    # ── EMAIL 2: notify tenant of the owner's decision ─────────────────────
-    tenant = await User.get(interest.tenant_id)
-    if tenant:
-        await notify_tenant_interest_response(
-            tenant_email=tenant.email,
-            tenant_name=tenant.name,
-            listing_location=listing.location,
-            accepted=accepted,
-        )
-        logger.info(
-            f"Interest-response email sent to tenant {tenant.email} "
-            f"(accepted={accepted})"
-        )
+    # Notify tenant
+    try:
+        tenant = await User.get(interest.tenant_id)
+        if tenant:
+            await notify_tenant_interest_response(
+                tenant_email=tenant.email,
+                tenant_name=tenant.name,
+                listing_location=listing.location,
+                accepted=accepted,
+            )
+    except Exception as e:
+        logger.warning(f"Tenant notification email failed: {e}")
 
-    # ── MARK FILLED + auto-decline competing interests ─────────────────────
+    # Mark filled + auto-decline competitors
     if accepted:
         listing.is_filled = True
         await listing.save()
-        logger.info(f"Listing {listing.id} marked as filled (interest accepted)")
 
         other_pending = await Interest.find({
             "listing_id": interest.listing_id,
@@ -231,24 +296,86 @@ async def respond_to_interest(
             other.responded_at = datetime.now(timezone.utc)
             await other.save()
 
-            other_tenant = await User.get(other.tenant_id)
-            if other_tenant:
-                await notify_tenant_interest_response(
-                    tenant_email=other_tenant.email,
-                    tenant_name=other_tenant.name,
-                    listing_location=listing.location,
-                    accepted=False,
-                )
-
-        if other_pending:
-            logger.info(
-                f"Auto-declined {len(other_pending)} competing interests "
-                f"on filled listing {listing.id}"
-            )
+            try:
+                other_tenant = await User.get(other.tenant_id)
+                if other_tenant:
+                    await notify_tenant_interest_response(
+                        tenant_email=other_tenant.email,
+                        tenant_name=other_tenant.name,
+                        listing_location=listing.location,
+                        accepted=False,
+                    )
+            except Exception as e:
+                logger.warning(f"Competitor notification failed: {e}")
 
     return {"success": True, "data": _interest_to_out(interest)}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# REVOKE ACCEPTED INTEREST (owner changes their mind after chatting)
+# ─────────────────────────────────────────────────────────────────────────────
+@router.patch("/{interest_id}/revoke", summary="Revoke a previously accepted interest")
+async def revoke_interest(
+    interest_id: str,
+    body: InterestRevoke,
+    current_user: Annotated[User, Depends(require_role(UserRole.owner))],
+):
+    """
+    Owner revokes a previously accepted interest.
+    - Only works if interest.status == 'accepted'
+    - Sets status to 'revoked'
+    - Frees up the listing (is_filled = False)
+    - Sends notification email to tenant
+    """
+    interest = await Interest.get(interest_id)
+    if not interest:
+        raise HTTPException(status_code=404, detail="Interest not found")
+
+    listing = await Listing.get(interest.listing_id)
+    if not listing or listing.owner_id != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if interest.status != InterestStatus.accepted:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot revoke — current status is '{interest.status.value}'",
+        )
+
+    # Revoke the interest
+    interest.status = InterestStatus.revoked
+    interest.revoked_at = datetime.now(timezone.utc)
+    interest.revoke_reason = body.reason
+    await interest.save()
+
+    # Free up the listing
+    listing.is_filled = False
+    await listing.save()
+
+    logger.info(
+        f"Interest {interest_id} revoked by owner {current_user.id}. "
+        f"Listing {listing.id} is available again."
+    )
+
+    # Notify tenant of revocation
+    try:
+        tenant = await User.get(interest.tenant_id)
+        if tenant:
+            # Reuse the decline notification for now
+            await notify_tenant_interest_response(
+                tenant_email=tenant.email,
+                tenant_name=tenant.name,
+                listing_location=listing.location,
+                accepted=False,
+            )
+    except Exception as e:
+        logger.warning(f"Revoke notification email failed: {e}")
+
+    return {"success": True, "data": _interest_to_out(interest)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET SINGLE INTEREST BY ID
+# ─────────────────────────────────────────────────────────────────────────────
 @router.get("/{interest_id}", summary="Get interest by ID")
 async def get_interest(
     interest_id: str,
@@ -266,4 +393,12 @@ async def get_interest(
     if not (is_tenant or is_owner or is_admin):
         raise HTTPException(status_code=403, detail="Access denied")
 
-    return {"success": True, "data": _interest_to_out(interest)}
+    out = _interest_to_out(interest)
+    if listing:
+        out["listing_location"] = listing.location
+
+    tenant = await User.get(interest.tenant_id)
+    if tenant:
+        out["tenant_name"] = tenant.name
+
+    return {"success": True, "data": out}
