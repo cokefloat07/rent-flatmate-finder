@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+client/node_modules/
+server/.venv/
+server/venv/
+venv/
+
+# Build outputs
+client/dist/
+server/dist/
+server/build/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
+
+# Editors
+.vscode/
+.idea/
+.DS_Store
