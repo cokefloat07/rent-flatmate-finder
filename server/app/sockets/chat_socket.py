@@ -19,9 +19,9 @@ from app.utils.logger import logger
 # but socketio also needs to allow the same origin.
 sio = socketio.AsyncServer(
     async_mode="asgi",
-    cors_allowed_origins="*",   # FastAPI CORS handles the real restriction
-    logger=False,
-    engineio_logger=False,
+    cors_allowed_origins="settings.get_cors_origins()",   # FastAPI CORS handles the real restriction
+    logger=True,
+    engineio_logger=True,
 )
 
 

@@ -16,7 +16,8 @@ import { ROUTES } from '../utils/constants';
 
 // ── Factory creates a fresh instance each time we import this module ─────────
 let _instance = null;
-
+export const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+export const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || "http://localhost:8000";
 function getAxiosInstance() {
   if (!_instance) {
     _instance = axios.create({
