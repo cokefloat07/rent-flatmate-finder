@@ -46,6 +46,21 @@ export async function updateListing(id, payload) {
   return api.patch(`/listings/${id}`, payload);
 }
 
+/**
+ * Toggle listing filled/available status.
+ * Backend endpoint: PATCH /listings/{id}/filled
+ *
+ * Note: This is a TOGGLE — the backend flips the current state.
+ * The `desiredFilled` param is accepted for API compatibility but not sent,
+ * since the backend uses a toggle pattern (not an explicit set).
+ */
+export async function setListingFilled(id, desiredFilled) {
+  return api.patch(`/listings/${id}/filled`);
+}
+
+/**
+ * Alias for backward compatibility.
+ */
 export async function toggleListingFilled(id) {
   return api.patch(`/listings/${id}/filled`);
 }
