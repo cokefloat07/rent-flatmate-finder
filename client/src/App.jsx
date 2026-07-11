@@ -19,17 +19,16 @@ import ProtectedRoute from './routes/ProtectedRoute';
 import RoleRoute from './routes/RoleRoute';
 
 import { ROUTES, ROLES } from './utils/constants';
-function App() {
+
+export default function App() {
   console.log('🔍 API URL:', import.meta.env.VITE_API_URL);
   console.log('🔍 All env:', import.meta.env);
-  // ... rest of your code
-}
-export default function App() {
   return (
     <BrowserRouter>
       <AppShell />
     </BrowserRouter>
   );
+
 }
 console.log('API URL:', import.meta.env.VITE_API_URL);
 function AppShell() {
