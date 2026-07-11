@@ -72,3 +72,9 @@ from app.sockets.chat_socket import sio
 # Wrap the FastAPI ASGI app inside the Socket.IO ASGI app.
 # Uvicorn must target `socket_app`, not `app` directly.
 socket_app = socketio.ASGIApp(sio, other_asgi_app=app)
+
+if __name__ == "__main__":
+    import os
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("app.main:socket_app", host="0.0.0.0", port=port)

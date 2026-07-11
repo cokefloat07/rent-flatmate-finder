@@ -1,12 +1,42 @@
 services:
   - type: web
-    name: rent-flatmate-finder-api
-    env: python
-    plan: free
+    name: rent-flatmate-backend
+    runtime: python
     rootDir: server
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:socket_app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /api/health
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.9
+      - key: MONGO_URI
+        sync: false
+      - key: MONGO_DB_NAME
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: ALGORITHM
+        value: HS256
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: 1440
+      - key: LLM_BASE_URL
+        sync: false
+      - key: LLM_MODEL
+        value: llama3.1:8b
+      - key: MAIL_USERNAME
+        sync: false
+      - key: MAIL_PASSWORD
+        sync: false
+      - key: MAIL_FROM
+        sync: false
+      - key: MAIL_FROM_NAME
+        value: Rent & Flatmate Finder
+      - key: MAIL_PORT
+        value: 587
+      - key: MAIL_SERVER
+        value: smtp.gmail.com
+      - key: MAIL_STARTTLS
+        value: true
+      - key: MAIL_SSL_TLS
+        value: false
+      - key: CLIENT_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
