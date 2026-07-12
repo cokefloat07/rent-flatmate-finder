@@ -17,6 +17,7 @@ import ListingFilters from '../components/listings/ListingFilters';
 import TenantProfileForm from '../components/profile/TenantProfileForm';
 import Skeleton from '../components/common/Skeleton';
 import useAuthStore from '../store/authStore';
+import useSocket from '../hooks/useSocket';
 import { fetchListings } from '../services/listing.service';
 import { fetchMyInterests } from '../services/interest.service';
 import { fetchMyProfile } from '../services/profile.service';
@@ -24,6 +25,7 @@ import { formatDate } from '../utils/formatters';
 
 export default function TenantDashboard() {
   const user = useAuthStore((s) => s.user);
+  const { connected, subscribe } = useSocket();
 
   // ── Listings ──────────────────────────────────────────────────────────────
   const [listings, setListings] = useState([]);
@@ -99,6 +101,18 @@ export default function TenantDashboard() {
     }, 30000);
     return () => clearInterval(interval);
   }, [loadInterests]);
+
+  // 🔑 Listen for score invalidation broadcasts (profile/listing changes)
+  useEffect(() => {
+    if (!connected) return;
+
+    const unsub = subscribe('scores_invalidated', (payload) => {
+      console.log('[socket] scores_invalidated:', payload);
+      loadListings();
+    });
+
+    return () => unsub();
+  }, [connected, subscribe, loadListings]);
 
   const handleFilterChange = (newFilters) => {
     setFilters((prev) => ({ ...prev, ...newFilters }));
@@ -187,7 +201,7 @@ export default function TenantDashboard() {
         </section>
       )}
 
-      {/* Revoked Interests — Show reason + past chat notice */}
+      {/* Revoked Interests */}
       {revokedInterests.length > 0 && (
         <section className="bg-surface rounded-2xl shadow-md p-6 border-2 border-warning/30">
           <h2 className="text-lg font-semibold text-neutral-900 flex items-center gap-2 mb-4">

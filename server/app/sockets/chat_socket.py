@@ -1,8 +1,9 @@
 """
 Real-time chat via python-socketio.
 
-Room naming: each accepted interest gets its own room keyed by interest_id.
-Room name: "room:{interest_id}"
+Room naming:
+  - Chat rooms:  "room:{interest_id}"  — per accepted interest
+  - User rooms:  "user:{user_id}"      — per authenticated user (for personal broadcasts)
 """
 import socketio
 from jose import JWTError
@@ -19,7 +20,19 @@ sio = socketio.AsyncServer(
     ping_interval=25,
 )
 
-# ── Connection lifecycle ───────────────────────────────────────────────────────
+
+# ── Helper (importable by HTTP routers) ───────────────────────────────────────
+
+async def emit_to_user(user_id: str, event: str, data: dict) -> None:
+    """Emit an event to every socket connected under this user_id."""
+    try:
+        await sio.emit(event, data, room=f"user:{user_id}")
+        logger.info(f"Emitted '{event}' to user:{user_id}")
+    except Exception as exc:
+        logger.warning(f"Failed to emit '{event}' to user:{user_id} — {exc}")
+
+
+# ── Connection lifecycle ──────────────────────────────────────────────────────
 
 @sio.event
 async def connect(sid: str, environ: dict, auth: dict | None):
@@ -28,7 +41,6 @@ async def connect(sid: str, environ: dict, auth: dict | None):
         return False
 
     raw = auth.get("token") if isinstance(auth, dict) else None
-
     if isinstance(raw, dict):
         raw = raw.get("token")
 
@@ -40,7 +52,11 @@ async def connect(sid: str, environ: dict, auth: dict | None):
         payload = decode_access_token(raw)
         user_id = payload["sub"]
         await sio.save_session(sid, {"user_id": user_id, "role": payload.get("role")})
-        logger.info(f"Socket connected: sid={sid}, user_id={user_id}")
+
+        # Auto-join a personal room so backend can push per-user events
+        await sio.enter_room(sid, f"user:{user_id}")
+
+        logger.info(f"Socket connected: sid={sid}, user_id={user_id}, joined user:{user_id}")
     except (JWTError, KeyError) as exc:
         logger.warning(f"Socket connect rejected (invalid token): sid={sid} — {exc}")
         return False
@@ -51,15 +67,10 @@ async def disconnect(sid: str):
     logger.info(f"Socket disconnected: sid={sid}")
 
 
-# ── Room management ────────────────────────────────────────────────────────────
+# ── Room management ───────────────────────────────────────────────────────────
 
 @sio.event
 async def join_room(sid: str, data: dict):
-    """
-    Join chat room.
-    - Accepted status → full read/write access
-    - Revoked status → read-only access (view history only)
-    """
     interest_id = data.get("interest_id")
     if not interest_id:
         await sio.emit("error", {"message": "interest_id required"}, to=sid)
@@ -76,7 +87,6 @@ async def join_room(sid: str, data: dict):
         await sio.emit("error", {"message": "Interest not found"}, to=sid)
         return
 
-    # Allow both accepted (full access) and revoked (read-only)
     if interest.status not in (InterestStatus.accepted, InterestStatus.revoked):
         await sio.emit(
             "error",
@@ -100,11 +110,7 @@ async def join_room(sid: str, data: dict):
     is_read_only = interest.status == InterestStatus.revoked
     await sio.emit(
         "joined",
-        {
-            "room": room,
-            "read_only": is_read_only,
-            "status": interest.status.value,
-        },
+        {"room": room, "read_only": is_read_only, "status": interest.status.value},
         to=sid,
     )
 
@@ -118,14 +124,10 @@ async def leave_room(sid: str, data: dict):
         logger.info(f"sid={sid} left {room}")
 
 
-# ── Messaging ──────────────────────────────────────────────────────────────────
+# ── Messaging ─────────────────────────────────────────────────────────────────
 
 @sio.event
 async def send_message(sid: str, data: dict):
-    """
-    Send a message. Only allowed if interest.status == 'accepted'.
-    Revoked chats are read-only.
-    """
     interest_id = data.get("interest_id")
     content = data.get("content", "").strip()
 

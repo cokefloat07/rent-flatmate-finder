@@ -4,10 +4,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.deps import get_current_user, require_role
 from app.models.tenant_profile import TenantProfile
-from app.models.compatibility_score import CompatibilityScore  # 🔑 add
 from app.models.user import User, UserRole
 from app.schemas.tenant_profile import TenantProfileCreate, TenantProfileOut, TenantProfileUpdate
-from app.utils.logger import logger  # 🔑 add
+from app.sockets.chat_socket import emit_to_user
+from app.utils.logger import logger
 
 router = APIRouter()
 
@@ -24,14 +24,9 @@ def _profile_to_out(p: TenantProfile) -> dict:
     ).model_dump()
 
 
-async def _invalidate_scores_for_tenant(tenant_id: str) -> int:
-    """Delete all cached compatibility scores for a tenant so they get recomputed."""
-    result = await CompatibilityScore.find(
-        {"tenant_id": tenant_id}
-    ).delete()
-    count = getattr(result, "deleted_count", 0) or 0
-    logger.info(f"Invalidated {count} cached scores for tenant {tenant_id}")
-    return count
+async def _notify_scores_invalidated(tenant_id: str, reason: str) -> None:
+    """Push a socket event so open tabs refetch listings."""
+    await emit_to_user(tenant_id, "scores_invalidated", {"reason": reason})
 
 
 @router.post("/", status_code=status.HTTP_201_CREATED, summary="Create tenant profile")
@@ -49,9 +44,7 @@ async def create_profile(
     profile = TenantProfile(tenant_id=str(current_user.id), **body.model_dump())
     await profile.insert()
 
-    # 🔑 In case any orphan scores exist, clear them
-    await _invalidate_scores_for_tenant(str(current_user.id))
-
+    await _notify_scores_invalidated(str(current_user.id), "profile_created")
     return {"success": True, "data": _profile_to_out(profile)}
 
 
@@ -80,9 +73,9 @@ async def update_my_profile(
 
     await profile.save()
 
-    # 🔑 CRITICAL: invalidate cached scores so they get recomputed
-    #    against the new profile on the next /listings request
-    await _invalidate_scores_for_tenant(str(current_user.id))
+    # 🔑 Hash mismatch on next /listings call will trigger recomputation.
+    #    Notify open tabs so they refetch immediately.
+    await _notify_scores_invalidated(str(current_user.id), "profile_updated")
 
     return {"success": True, "data": _profile_to_out(profile)}
 
@@ -94,11 +87,14 @@ async def delete_my_profile(
     profile = await TenantProfile.find_one({"tenant_id": str(current_user.id)})
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
+
     await profile.delete()
 
-    # 🔑 Clean up scores when profile is deleted
-    await _invalidate_scores_for_tenant(str(current_user.id))
+    # Clean up cached scores since the profile is gone
+    from app.models.compatibility_score import CompatibilityScore
+    await CompatibilityScore.find({"tenant_id": str(current_user.id)}).delete()
 
+    await _notify_scores_invalidated(str(current_user.id), "profile_deleted")
     return {"success": True, "message": "Profile deleted"}
 
 
