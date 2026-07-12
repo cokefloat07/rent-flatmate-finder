@@ -2,7 +2,7 @@ import json
 from typing import Any
 
 import httpx
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
 
 from app.core.config import settings
 from app.utils.build_prompt import build_prompt
@@ -15,8 +15,19 @@ class _ScoreShape(BaseModel):
     score: float
     explanation: str
 
-    def model_post_init(self, __context: Any) -> None:
-        self.score = round(min(max(float(self.score), 0.0), 100.0), 1)
+    @field_validator("score")
+    @classmethod
+    def clamp_score(cls, v: Any) -> float:
+        try:
+            return round(min(max(float(v), 0.0), 100.0), 1)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Score is not a number: {v!r}") from exc
+
+    @field_validator("explanation")
+    @classmethod
+    def ensure_explanation(cls, v: Any) -> str:
+        s = str(v).strip() if v is not None else ""
+        return s or "No explanation provided."
 
 
 def _parse_llm_response(raw: str) -> dict:
@@ -24,7 +35,7 @@ def _parse_llm_response(raw: str) -> dict:
     Attempt to parse the LLM's JSON response.
     Strips markdown fences if the model wrapped JSON in ```json ... ```.
     """
-    cleaned = raw.strip()
+    cleaned = (raw or "").strip()
     if cleaned.startswith("```"):
         lines = cleaned.splitlines()
         cleaned = "\n".join(
@@ -117,9 +128,21 @@ async def get_compatibility_score(tenant_profile: dict, listing: dict) -> dict:
 
     Uses either Ollama or Groq depending on LLM_PROVIDER env var.
     Falls back to rule-based scoring on any failure.
+
+    GUARANTEE: Always returns a dict with 'score', 'explanation', 'method'.
+    Never raises.
     """
-    prompt = build_prompt(tenant_profile, listing)
-    provider = settings.LLM_PROVIDER.lower().strip()
+    provider = settings.LLM_PROVIDER.lower().strip() if settings.LLM_PROVIDER else "unknown"
+
+    # Build prompt safely
+    try:
+        prompt = build_prompt(tenant_profile, listing)
+    except Exception as exc:
+        logger.error(f"build_prompt failed: {exc}", exc_info=True)
+        return {
+            **rule_based_score(tenant_profile, listing),
+            "method": "rule-based",
+        }
 
     for attempt in (1, 2):  # one retry on malformed JSON
         try:
@@ -140,7 +163,8 @@ async def get_compatibility_score(tenant_profile: dict, listing: dict) -> dict:
 
         except Exception as exc:
             logger.warning(
-                f"LLM ({provider}) unavailable, using rule-based fallback: {exc}"
+                f"LLM ({provider}) unavailable, using rule-based fallback: "
+                f"{type(exc).__name__}: {exc}"
             )
             return {
                 **rule_based_score(tenant_profile, listing),

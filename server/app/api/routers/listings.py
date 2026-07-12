@@ -82,6 +82,44 @@ async def get_my_listings(
     return {"success": True, "data": [_listing_to_out(l) for l in listings]}
 
 
+# ⚠️ TEMPORARY DEBUG ENDPOINTS — REMOVE AFTER FIXING SCORES
+# Placed BEFORE /{listing_id} route to avoid path collision.
+
+@router.get("/admin/clear-scores-public", summary="TEMP: clear all scores (no auth)")
+async def clear_scores_public():
+    """⚠️ TEMPORARY — remove after debugging."""
+    from app.models.compatibility_score import CompatibilityScore
+    result = await CompatibilityScore.delete_all()
+    count = result.deleted_count if result else 0
+    logger.info(f"[PUBLIC DEBUG] Cleared {count} compatibility scores")
+    return {"success": True, "message": f"Deleted {count} scores"}
+
+
+@router.get("/admin/debug-config", summary="TEMP: show LLM config (no auth)")
+async def debug_config():
+    """⚠️ TEMPORARY — reveals LLM configuration for debugging."""
+    from app.core.config import settings
+    return {
+        "LLM_PROVIDER": getattr(settings, "LLM_PROVIDER", None),
+        "LLM_MODEL": getattr(settings, "LLM_MODEL", None),
+        "LLM_BASE_URL": getattr(settings, "LLM_BASE_URL", None),
+        "GROQ_MODEL": getattr(settings, "GROQ_MODEL", None),
+        "GROQ_BASE_URL": getattr(settings, "GROQ_BASE_URL", None),
+        "GROQ_API_KEY_set": bool(getattr(settings, "GROQ_API_KEY", None)),
+    }
+
+
+@router.delete("/admin/clear-scores", summary="Clear all compatibility scores (dev only)")
+async def clear_scores(
+    current_user: Annotated[User, Depends(get_current_user)],
+):
+    from app.models.compatibility_score import CompatibilityScore
+    result = await CompatibilityScore.delete_all()
+    count = result.deleted_count if result else 0
+    logger.info(f"Cleared {count} compatibility scores")
+    return {"success": True, "message": f"Deleted {count} scores"}
+
+
 @router.get("/{listing_id}", summary="Get listing by ID")
 async def get_listing(listing_id: str):
     listing = await Listing.get(listing_id)
@@ -107,8 +145,6 @@ async def update_listing(
         setattr(listing, field, value)
 
     await listing.save()
-
-    # 🔑 Invalidate cached scores + notify affected tenants
     await _invalidate_listing_scores(listing_id, "listing_updated")
 
     return {"success": True, "data": _listing_to_out(listing)}
@@ -119,7 +155,6 @@ async def toggle_listing_filled(
     listing_id: str,
     current_user: Annotated[User, Depends(require_role(UserRole.owner))],
 ):
-    """Toggle the is_filled status of a listing (owner only)."""
     listing = await Listing.get(listing_id)
     if not listing:
         raise HTTPException(status_code=404, detail="Listing not found")
@@ -129,7 +164,6 @@ async def toggle_listing_filled(
     listing.is_filled = not listing.is_filled
     await listing.save()
 
-    # 🔑 Notify tenants when availability changes
     await _invalidate_listing_scores(listing_id, "listing_status_changed")
 
     return {
@@ -158,23 +192,8 @@ async def delete_listing(
     return {"success": True, "message": "Listing deleted"}
 
 
-@router.delete("/admin/clear-scores", summary="Clear all compatibility scores (dev only)")
-async def clear_scores(
-    current_user: Annotated[User, Depends(get_current_user)],
-):
-    """
-    TEMPORARY: Clears all compatibility scores.
-    Useful after schema changes (e.g. adding hash fields).
-    """
-    from app.models.compatibility_score import CompatibilityScore
-    result = await CompatibilityScore.delete_all()
-    count = result.deleted_count if result else 0
-    logger.info(f"Cleared {count} compatibility scores")
-    return {"success": True, "message": f"Deleted {count} scores"}
-
-
 # ─────────────────────────────────────────────────────────────
-# Browse — hash-aware caching
+# Browse — hash-aware caching with resilient fallback
 # ─────────────────────────────────────────────────────────────
 
 @router.get("/", summary="Browse available listings with filters")
@@ -206,11 +225,11 @@ async def browse_listings(
 
     listings = await Listing.find(query_dict).skip(skip).limit(limit).to_list()
 
-    # For tenants: compute AI compatibility scores with hash-aware caching
     if current_user and current_user.role == UserRole.tenant:
         from app.services.llm_service import get_compatibility_score
         from app.models.tenant_profile import TenantProfile
         from app.models.compatibility_score import CompatibilityScore
+        from app.utils.rule_based_score import rule_based_score
 
         profile = await TenantProfile.find_one({"tenant_id": str(current_user.id)})
 
@@ -226,6 +245,11 @@ async def browse_listings(
             }
             current_profile_hash = profile_fingerprint(profile_dict)
 
+        logger.info(
+            f"browse_listings: user={current_user.id}, "
+            f"profile_found={profile is not None}, listings={len(listings)}"
+        )
+
         results = []
         for listing in listings:
             listing_out = _listing_to_out(listing)
@@ -237,14 +261,16 @@ async def browse_listings(
                 results.append(listing_out)
                 continue
 
+            listing_dict = {
+                "location": listing.location,
+                "rent": listing.rent,
+                "available_from": str(listing.available_from),
+                "room_type": listing.room_type.value,
+                "furnishing_status": listing.furnishing_status.value,
+            }
+
+            score_data = None
             try:
-                listing_dict = {
-                    "location": listing.location,
-                    "rent": listing.rent,
-                    "available_from": str(listing.available_from),
-                    "room_type": listing.room_type.value,
-                    "furnishing_status": listing.furnishing_status.value,
-                }
                 current_listing_hash = listing_fingerprint(listing_dict)
 
                 cached = await CompatibilityScore.find_one({
@@ -252,7 +278,6 @@ async def browse_listings(
                     "listing_id": str(listing.id),
                 })
 
-                # 🔑 Only use cache if BOTH hashes match
                 cache_valid = (
                     cached is not None
                     and cached.profile_hash == current_profile_hash
@@ -265,47 +290,72 @@ async def browse_listings(
                         "explanation": cached.explanation,
                         "method": cached.method.value,
                     }
+                    logger.debug(f"Cache HIT for listing {listing.id}")
                 else:
+                    logger.debug(f"Cache MISS for listing {listing.id} — computing")
                     score_data = await get_compatibility_score(profile_dict, listing_dict)
                     method_enum = _safe_score_method(score_data["method"])
 
-                    if cached:
-                        # Update in place to avoid unique-index violation
-                        cached.score = score_data["score"]
-                        cached.explanation = score_data["explanation"]
-                        cached.method = method_enum
-                        cached.profile_hash = current_profile_hash
-                        cached.listing_hash = current_listing_hash
-                        cached.updated_at = datetime.now(timezone.utc)
-                        await cached.save()
-                    else:
-                        cs = CompatibilityScore(
-                            tenant_id=str(current_user.id),
-                            listing_id=str(listing.id),
-                            score=score_data["score"],
-                            explanation=score_data["explanation"],
-                            method=method_enum,
-                            profile_hash=current_profile_hash,
-                            listing_hash=current_listing_hash,
+                    try:
+                        if cached:
+                            cached.score = score_data["score"]
+                            cached.explanation = score_data["explanation"]
+                            cached.method = method_enum
+                            cached.profile_hash = current_profile_hash
+                            cached.listing_hash = current_listing_hash
+                            cached.updated_at = datetime.now(timezone.utc)
+                            await cached.save()
+                        else:
+                            cs = CompatibilityScore(
+                                tenant_id=str(current_user.id),
+                                listing_id=str(listing.id),
+                                score=score_data["score"],
+                                explanation=score_data["explanation"],
+                                method=method_enum,
+                                profile_hash=current_profile_hash,
+                                listing_hash=current_listing_hash,
+                            )
+                            await cs.insert()
+                    except Exception as save_err:
+                        # DB save failed — don't fail the whole request, just log
+                        logger.warning(
+                            f"Failed to persist score for listing {listing.id}: "
+                            f"{type(save_err).__name__}: {save_err}"
                         )
-                        await cs.insert()
-
-                listing_out["compatibility_score"] = score_data["score"]
-                listing_out["score_explanation"] = score_data["explanation"]
-                listing_out["score_method"] = score_data["method"]
 
             except Exception as e:
                 logger.error(
-                    f"Failed to compute score for listing {listing.id}: {e}",
+                    f"Failed to compute score for listing {listing.id}: "
+                    f"{type(e).__name__}: {e}",
                     exc_info=True,
                 )
+                # 🔑 LAST-RESORT FALLBACK: use rule_based directly so user still sees a score
+                try:
+                    fallback = rule_based_score(profile_dict, listing_dict)
+                    score_data = {
+                        "score": fallback["score"],
+                        "explanation": fallback["explanation"],
+                        "method": "rule-based",
+                    }
+                    logger.info(f"Recovered listing {listing.id} with direct rule_based fallback")
+                except Exception as fb_err:
+                    logger.error(
+                        f"Even rule_based fallback failed for {listing.id}: {fb_err}",
+                        exc_info=True,
+                    )
+                    score_data = None
+
+            if score_data:
+                listing_out["compatibility_score"] = score_data["score"]
+                listing_out["score_explanation"] = score_data["explanation"]
+                listing_out["score_method"] = score_data["method"]
+            else:
                 listing_out["compatibility_score"] = None
                 listing_out["score_explanation"] = "Score unavailable"
                 listing_out["score_method"] = "error"
 
             results.append(listing_out)
 
-        # Sort by score DESC (None values go to the end)
         results.sort(
             key=lambda x: x.get("compatibility_score") if x.get("compatibility_score") is not None else -1,
             reverse=True,
